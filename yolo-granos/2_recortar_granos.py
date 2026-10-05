@@ -11,8 +11,13 @@ Genera la estructura que espera `yolo classify`:
 Además puede crear un data.yaml de UNA sola clase ("grano") que reutiliza las mismas imágenes,
 para entrenar el detector de la etapa 1 sin duplicar el dataset.
 
+Con --fusionar se pueden unir clases que solo se distinguen por tamaño (ej. sanog/sanop): al
+reescalar cada recorte a 224 px el clasificador pierde el tamaño real, así que es mejor clasificar
+"sano" y decidir grande/pequeño midiendo el grano (ver 0_auditar_dataset.py y 4_dos_etapas.py).
+
 Uso:
-  python 2_recortar_granos.py --data data.yaml --out dataset_cls --balancear 300 --yaml-detector data_1clase.yaml
+  python 2_recortar_granos.py --data data.yaml --out dataset_cls --balancear 300 --yaml-detector data_1clase.yaml \
+      --fusionar sano=sanog,sanop
 """
 
 import argparse
@@ -37,11 +42,21 @@ def main():
     ap.add_argument("--balancear", type=int, default=0,
                     help="en train, duplica recortes de clases con menos de N ejemplos hasta llegar a N")
     ap.add_argument("--yaml-detector", default=None, help="si se da, escribe un data.yaml de una sola clase")
+    ap.add_argument("--fusionar", action="append", default=[], metavar="NUEVA=A,B",
+                    help="une clases en una sola carpeta; se puede repetir")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
     data = cargar_data_yaml(args.data, args.root)
     names = data["names"]
+    destino_de = {n: n for n in names}
+    for regla in args.fusionar:
+        nueva, _, origen = regla.partition("=")
+        for n in origen.split(","):
+            if n not in destino_de:
+                raise SystemExit(f"--fusionar: la clase '{n}' no existe en el data.yaml")
+            destino_de[n] = nueva
+    clases_salida = list(dict.fromkeys(destino_de.values()))
     out = Path(args.out)
     if out.exists():
         shutil.rmtree(out)
@@ -68,14 +83,15 @@ def main():
                     x1, y1, x2, y2 = xywhn_a_xyxy(xc, yc, w, h, W, H)
                     if min(x2 - x1, y2 - y1) < args.min_px:
                         continue
-                    destino = out / split / names[cls] / f"{img_path.stem}_{i:03d}.jpg"
+                    nombre = destino_de[names[cls]]
+                    destino = out / split / nombre / f"{img_path.stem}_{i:03d}.jpg"
                     destino.parent.mkdir(parents=True, exist_ok=True)
                     recortar(im, (x1, y1, x2, y2), args.margen).save(destino, quality=95)
-                    conteo[names[cls]] += 1
-                    archivos_por_clase[names[cls]].append(destino)
+                    conteo[nombre] += 1
+                    archivos_por_clase[nombre].append(destino)
 
         # Ultralytics classify necesita la carpeta de cada clase en todos los splits
-        for n in names:
+        for n in clases_salida:
             (out / split / n).mkdir(parents=True, exist_ok=True)
 
         if split == "train" and args.balancear:
@@ -87,7 +103,7 @@ def main():
                     shutil.copy(src, src.with_name(f"{src.stem}_dup{k:04d}.jpg"))
 
         print(f"\n[{split}] {len(imagenes)} imágenes, {sin_etiqueta} sin etiquetas, {sum(conteo.values())} recortes")
-        for n in names:
+        for n in clases_salida:
             print(f"  {n:<14} {conteo[n]:>6}")
 
     if args.yaml_detector:

@@ -8,8 +8,13 @@ detección con la etiqueta real (IoU >= 0.5) y construye una matriz de confusió
 que la de Ultralytics (filas = predicción, columnas = real, última fila/columna = background), para
 compararla directamente con la del modelo de una sola etapa.
 
+Separación por tamaño: si el clasificador se entrenó con una clase fusionada (ej. `sano` = sanog + sanop),
+--tamano "sano:ancho:23.5:sanog:sanop" mide cada grano clasificado como `sano` y lo asigna a `sanog` si
+su ancho >= 23.5 px, o a `sanop` si no. El umbral y la métrica salen de 0_auditar_dataset.py.
+
 Uso:
   python 4_dos_etapas.py evaluar  --det det.pt --cls cls.pt --data data.yaml --split val
+  python 4_dos_etapas.py evaluar  --det det.pt --cls cls.pt --data data.yaml --tamano "sano:ancho:23.5:sanog:sanop"
   python 4_dos_etapas.py predecir --det det.pt --cls cls.pt --source carpeta_imagenes/ --guardar-imagenes
 """
 
@@ -21,15 +26,52 @@ import numpy as np
 from PIL import Image, ImageDraw
 from ultralytics import YOLO
 
-from comun import IMG_EXTS, cargar_data_yaml, iou, leer_etiquetas, listar_imagenes, recortar, xywhn_a_xyxy
+from comun import (IMG_EXTS, cargar_data_yaml, iou, leer_etiquetas, listar_imagenes, medir_grano, recortar,
+                   xywhn_a_xyxy)
+
+METRICAS = ("ancho", "largo", "area")
+
+
+def parsear_tamano(spec):
+    """'sano:ancho:23.5:sanog:sanop' -> dict"""
+    try:
+        clase, metrica, umbral, grande, pequeno = spec.split(":")
+        assert metrica in METRICAS
+        return {"clase": clase, "metrica": metrica, "umbral": float(umbral), "grande": grande, "pequeno": pequeno}
+    except (ValueError, AssertionError):
+        raise SystemExit(f"--tamano inválido: {spec!r}. Formato: CLASE:{'|'.join(METRICAS)}:UMBRAL:GRANDE:PEQUENO")
+
+
+def medida_caja(caja, metrica):
+    """Respaldo cuando no se puede aislar el grano: medida aproximada con la caja (depende de la orientación)."""
+    w, h = caja[2] - caja[0], caja[3] - caja[1]
+    return {"ancho": min(w, h), "largo": max(w, h), "area": w * h}[metrica]
 
 
 class DosEtapas:
-    def __init__(self, det, cls, imgsz_det=1024, imgsz_cls=224, conf=0.25, iou_nms=0.5, margen=0.15, device=None):
+    def __init__(self, det, cls, imgsz_det=1024, imgsz_cls=224, conf=0.25, iou_nms=0.5, margen=0.15, device=None,
+                 tamano=None):
         self.det, self.cls = YOLO(det), YOLO(cls)
         self.imgsz_det, self.imgsz_cls = imgsz_det, imgsz_cls
         self.conf, self.iou_nms, self.margen, self.device = conf, iou_nms, margen, device
         self.names = self.cls.names  # {i: nombre}
+        self.tamano = tamano
+        self.clases_salida = set(self.names.values())
+        if tamano:
+            if tamano["clase"] not in self.clases_salida:
+                raise SystemExit(f"--tamano: el clasificador no tiene la clase '{tamano['clase']}'")
+            self.clases_salida = (self.clases_salida - {tamano["clase"]}) | {tamano["grande"], tamano["pequeno"]}
+        self.sin_medida = 0  # granos en los que no se pudo aislar el grano y se usó la caja
+
+    def _por_tamano(self, recorte, caja):
+        t = self.tamano
+        m = medir_grano(recorte)
+        if m is None or m["pegado"]:
+            self.sin_medida += 1
+            valor = medida_caja(caja, t["metrica"])
+        else:
+            valor = m[t["metrica"]]
+        return t["grande"] if valor >= t["umbral"] else t["pequeno"]
 
     def __call__(self, img_path):
         """Devuelve [(xyxy, nombre_clase, conf_clase, conf_det)] para una imagen."""
@@ -47,8 +89,10 @@ class DosEtapas:
             res = self.cls.predict(recortes[i:i + 64], imgsz=self.imgsz_cls, device=self.device, verbose=False)
             for j, rc in enumerate(res):
                 k = i + j
-                top = int(rc.probs.top1)
-                salida.append((cajas[k].tolist(), self.names[top], float(rc.probs.top1conf), float(conf_det[k])))
+                nombre = self.names[int(rc.probs.top1)]
+                if self.tamano and nombre == self.tamano["clase"]:
+                    nombre = self._por_tamano(recortes[k], cajas[k])
+                salida.append((cajas[k].tolist(), nombre, float(rc.probs.top1conf), float(conf_det[k])))
         return im, salida
 
 
@@ -56,7 +100,7 @@ def evaluar(pipe, args):
     data = cargar_data_yaml(args.data, args.root)
     names = data["names"]
     nc = len(names)
-    faltan = set(names) - set(pipe.names.values())
+    faltan = set(names) - pipe.clases_salida
     if faltan:
         raise SystemExit(f"El clasificador no tiene las clases: {sorted(faltan)}")
     idx = {n: i for i, n in enumerate(names)}
@@ -127,6 +171,8 @@ def evaluar(pipe, args):
         fig.savefig(out / "matriz_confusion.png", dpi=150)
     except ImportError:
         pass
+    if pipe.tamano:
+        print(f"\nGranos medidos con la caja por no poder aislarlos (pegados/fondo irregular): {pipe.sin_medida}")
     print(f"\nMatriz guardada en {out}/matriz_confusion.csv (y .png)")
 
 
@@ -160,6 +206,10 @@ def main():
     ap.add_argument("--imgsz-det", type=int, default=1024)
     ap.add_argument("--imgsz-cls", type=int, default=224)
     ap.add_argument("--conf", type=float, default=0.25)
+    ap.add_argument("--iou", type=float, default=0.5,
+                    help="NMS; debe ser mayor que el IoU típico entre granos pegados (ver 0_auditar_dataset.py)")
+    ap.add_argument("--tamano", default=None, metavar="CLASE:METRICA:UMBRAL:GRANDE:PEQUENO",
+                    help="separa una clase fusionada por tamaño medido, ej. sano:ancho:23.5:sanog:sanop")
     ap.add_argument("--margen", type=float, default=0.15, help="debe coincidir con el usado en 2_recortar_granos.py")
     ap.add_argument("--device", default=None)
     ap.add_argument("--data", help="(evaluar) data.yaml original con las 14 clases")
@@ -170,8 +220,9 @@ def main():
     ap.add_argument("--out", default="resultados_dos_etapas")
     args = ap.parse_args()
 
-    pipe = DosEtapas(args.det, args.cls, args.imgsz_det, args.imgsz_cls, args.conf, margen=args.margen,
-                     device=args.device)
+    pipe = DosEtapas(args.det, args.cls, args.imgsz_det, args.imgsz_cls, args.conf, iou_nms=args.iou,
+                     margen=args.margen, device=args.device,
+                     tamano=parsear_tamano(args.tamano) if args.tamano else None)
     if args.modo == "evaluar":
         if not args.data:
             ap.error("evaluar requiere --data")

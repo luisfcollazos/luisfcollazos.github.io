@@ -102,3 +102,40 @@ def iou(a, b) -> float:
     inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
     union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
     return inter / union if union > 0 else 0.0
+
+
+def medir_grano(recorte: Image.Image) -> dict | None:
+    """Mide el grano del centro del recorte separándolo del fondo (Otsu + componente conectada).
+
+    Devuelve área (px), largo y ancho del rectángulo mínimo rotado, independientes de la orientación,
+    a diferencia de la caja de YOLO, que cambia si el grano está girado. Supone un fondo uniforme.
+    Si hay granos pegados que se fusionan con el del centro, la medida sale inflada: `pegado=True`.
+    """
+    import cv2
+    import numpy as np
+
+    gris = cv2.cvtColor(np.asarray(recorte.convert("RGB")), cv2.COLOR_RGB2GRAY)
+    gris = cv2.GaussianBlur(gris, (5, 5), 0)
+    _, binaria = cv2.threshold(gris, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # el fondo es lo que domina en el borde del recorte; el grano es lo contrario
+    borde = np.concatenate([binaria[0], binaria[-1], binaria[:, 0], binaria[:, -1]])
+    if borde.mean() > 127:
+        binaria = 255 - binaria
+    binaria = cv2.morphologyEx(binaria, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    n, etiquetas, stats, _ = cv2.connectedComponentsWithStats(binaria)
+    if n < 2:
+        return None
+    h, w = binaria.shape
+    comp = etiquetas[h // 2, w // 2]
+    if comp == 0:  # el centro cayó en fondo: toma la componente más grande
+        comp = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    mascara = (etiquetas == comp).astype(np.uint8)
+    contornos, _ = cv2.findContours(mascara, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    (_, _), (a, b), _ = cv2.minAreaRect(max(contornos, key=cv2.contourArea))
+    x, y, cw, ch = stats[comp, :4]
+    return {
+        "area": float(stats[comp, cv2.CC_STAT_AREA]),
+        "largo": float(max(a, b)),
+        "ancho": float(min(a, b)),
+        "pegado": bool(x == 0 or y == 0 or x + cw >= w or y + ch >= h),
+    }

@@ -19,6 +19,59 @@ el mismo umbral de validación que usa el mAP. Con ese umbral:
 Si la matriz original tiene ~1 no detectado y ~9.000 sobrantes, es muy probable que esto la esté distorsionando.
 El paso 1 la recalcula con un umbral realista.
 
+## Auditoría del dataset (hacer primero)
+
+```bash
+python 0_auditar_dataset.py --data data.yaml --grande sanog --pequeno sanop --dibujar 30
+```
+
+| Revisión | Qué reporta | Qué hacer |
+|---|---|---|
+| **Cajas solapadas** | duplicados (IoU ≥ 0.6) con la misma clase o con clases distintas, cajas que contienen a otra (abarcan varios granos) e IoU entre granos que se tocan | Corregir los duplicados (sobre todo los de distinta clase: el modelo recibe dos respuestas para el mismo grano). Revisar las muestras en `auditoria/muestras/`. |
+| **Tamaño por clase** | ancho, largo y área del grano real (segmentado contra el fondo, sin depender de la orientación). Para sanog/sanop busca el mejor umbral único | Si el umbral acierta más de 95 %, fusionar las clases y **medir** el tamaño (ver abajo). Si acierta menos de 90 %, las etiquetas de tamaño no siguen una regla fija y conviene re-etiquetar. |
+| **Clases raras** | instancias e imágenes por clase y split, con aviso si hay pocas en val/test | Ver la sección "Clases con pocas imágenes". |
+
+Detalle en `auditoria/problemas_solapamiento.csv` y `auditoria/tamanos.csv`.
+
+> Medir en píxeles solo es válido si la cámara está siempre a la misma distancia. La auditoría avisa si hay
+> imágenes con resoluciones distintas.
+
+## sanog/sanop: medir el tamaño en vez de aprenderlo
+
+YOLO no conserva bien el tamaño absoluto: el aumento `scale` reescala las imágenes durante el entrenamiento
+y el clasificador recibe cada recorte reescalado a 224 px. Si dos clases solo se diferencian por tamaño,
+es más fiable que el modelo diga "sano" y que el tamaño se mida:
+
+```bash
+python 2_recortar_granos.py --data data.yaml --out dataset_cls --fusionar sano=sanog,sanop --balancear 300
+python 3_entrenar.py clasificador --data dataset_cls
+python 4_dos_etapas.py evaluar --det ... --cls ... --data data.yaml --tamano "sano:ancho:UMBRAL:sanog:sanop"
+```
+
+`UMBRAL` y la métrica (`ancho`, `largo` o `area`) salen de la auditoría. El ancho es lo más parecido a
+cómo clasifica una malla o tamiz. Los granos que no se pueden aislar porque están pegados se miden con la caja,
+de forma aproximada, y se informa cuántos fueron.
+
+## Clases con pocas imágenes (vinagre, broca)
+
+- **En el pipeline de dos etapas el detector no se ve afectado**: para él todo es "grano". El desbalance
+  solo pesa en el clasificador, donde `--balancear N` duplica recortes de las clases escasas (cada copia se
+  aumenta distinto en cada época).
+- Asegura que val y test tengan suficientes ejemplos de estas clases. Con 10–20 instancias, el recall de
+  una clase cambia ±10 puntos por 2 granos.
+- Lo que más ayuda es **capturar más imágenes de esas clases**. Por ejemplo, fotografiar bandejas solo con granos
+  vinagre o broca separados de muestras ya clasificadas por un catador.
+- Broca es un orificio pequeño: necesita resolución. Prueba el clasificador con `--imgsz 320`.
+
+## Granos pegados
+
+- Si los granos se tocan, la caja de uno incluye parte del vecino, y eso confunde tanto al detector como
+  al recorte que ve el clasificador.
+- La solución más efectiva está en la captura: separar los granos, por ejemplo con una bandeja con
+  alvéolos o una vibración ligera.
+- En el modelo, la alternativa es pasar a **segmentación** (`yolo11s-seg`). La máscara separa los granos
+  aunque se toquen y permite medir el tamaño con exactitud. Requiere etiquetar con polígonos.
+
 ## 1. Diagnóstico del modelo actual
 
 ```bash
@@ -63,6 +116,7 @@ vertical, porque un grano no tiene orientación.
 
 ```bash
 # matriz de confusión comparable a la de Ultralytics (mismo formato, IoU >= 0.5, conf >= 0.25)
+# --iou ajusta el NMS (ver "Cajas que se tocan" en la auditoría); --tamano separa clases fusionadas
 python 4_dos_etapas.py evaluar  --det runs/detect/det_granos/weights/best.pt \
                                 --cls runs/classify/cls_granos/weights/best.pt --data data.yaml
 
