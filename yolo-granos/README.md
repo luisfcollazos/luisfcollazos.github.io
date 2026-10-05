@@ -48,6 +48,16 @@ python 0b_mosaico_clases.py --data data.yaml --modelo ruta/best.pt
   así que también se compara el tamaño. Si el mosaico de "vinagre" no muestra granos vinagre, los nombres
   están desalineados con los índices de las etiquetas.
 
+### Cruce etiquetas vs. modelo
+
+```bash
+python 0c_cruce_modelo.py --model ruta/best.pt --data data.yaml --split val --imgsz 640
+```
+
+Para cada caja etiquetada, muestra qué clase predice el modelo entrenado. Aunque el modelo acierte poco, un
+desajuste sistemático (por ejemplo, las cajas "sanop" predichas sobre todo como "vinagre") indica que las
+etiquetas del dataset están corridas o renombradas respecto a las que se usaron para entrenar.
+
 > Medir en píxeles solo es válido si la cámara está siempre a la misma distancia. La auditoría avisa si hay
 > imágenes con resoluciones distintas.
 

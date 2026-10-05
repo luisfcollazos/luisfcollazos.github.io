@@ -202,8 +202,14 @@ def main():
         if g and p and g["area"] and p["area"]:
             print(f"\n  Separación {args.grande} (grande) vs {args.pequeno} (pequeño) con un solo umbral:")
             for metrica in ("ancho", "largo", "area"):
-                exactitud, u = mejor_umbral(np.array(g[metrica]), np.array(p[metrica]))
+                ga, pa = np.array(g[metrica]), np.array(p[metrica])
+                exactitud, u = mejor_umbral(ga, pa)
+                # prueba también la dirección contraria: puede que la clase "grande" sea en realidad la pequeña
+                exactitud_inv, u_inv = mejor_umbral(pa, ga)
                 print(f"    {metrica:<6} umbral={u:8.1f}  exactitud balanceada={exactitud:.1%}")
+                if exactitud_inv > exactitud + 0.05:
+                    print(f"           !! al revés ({args.pequeno} >= {u_inv:.1f} > {args.grande}) acierta "
+                          f"{exactitud_inv:.1%}: '{args.grande}' es en realidad la clase PEQUEÑA")
             print("    > 95 %: el tamaño se puede MEDIR en vez de aprender (fusionar clases + umbral).")
             print("    < 90 %: las etiquetas de tamaño no son consistentes; conviene re-etiquetar con una regla fija.")
 
