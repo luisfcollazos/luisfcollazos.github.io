@@ -7,6 +7,24 @@ Scripts para diagnosticar el modelo YOLO de 14 clases de defectos y probar la al
 pip install -r requirements.txt   # ultralytics >= 8.3
 ```
 
+## Re-exportar desde Label Studio y empezar limpio
+
+```bash
+# 1. ver y luego borrar caches de Ultralytics (*.cache, *.npy) y salidas de estos scripts
+python limpiar_caches.py --dataset ruta/dataset_viejo --salidas
+python limpiar_caches.py --dataset ruta/dataset_viejo --salidas --borrar
+
+# 2. export YOLO de Label Studio -> dataset nuevo con splits estratificados y data.yaml
+python preparar_export.py --export ruta/export_labelstudio --out dataset_v2 --val 0.15 --test 0.15
+
+# 3. verificar antes de entrenar
+python 0_auditar_dataset.py   --data dataset_v2/data.yaml
+python 0b_mosaico_clases.py   --data dataset_v2/data.yaml
+```
+
+`preparar_export.py` toma los nombres del `classes.txt` del export (el mismo orden que los índices),
+valida las etiquetas y nunca escribe sobre un dataset existente. Así no sobreviven `.txt` viejos de un export anterior.
+
 ## 0. Antes de nada: revisa el umbral de la matriz de confusión
 
 En Ultralytics 8.4+, la `confusion_matrix.png` que genera el entrenamiento se calcula con **conf = 0.001**,
