@@ -15,6 +15,9 @@ Revisa tres problemas que afectan directamente la matriz de confusión:
 
 3. Clases raras: instancias e imágenes por clase y split, con aviso si hay muy pocas en val/test.
 
+4. Cajas anormalmente pequeñas (< --frac-pequena x la mediana de todas): suele indicar que en algunas
+   imágenes se etiquetó solo el defecto (ej. el orificio de broca) y en otras el grano entero.
+
 Salidas en --out: problemas_solapamiento.csv, tamanos.csv y, con --dibujar N, imágenes de muestra
 con las cajas problemáticas marcadas.
 
@@ -61,6 +64,8 @@ def main():
     ap.add_argument("--contencion", type=float, default=0.9)
     ap.add_argument("--grande", default="sanog")
     ap.add_argument("--pequeno", default="sanop")
+    ap.add_argument("--frac-pequena", type=float, default=0.5,
+                    help="caja pequeña si su lado medio es menor que esta fracción de la mediana global")
     ap.add_argument("--min-val", type=int, default=30, help="aviso si una clase tiene menos instancias en val/test")
     ap.add_argument("--no-medir", action="store_true", help="omite la medición del grano (más rápido)")
     ap.add_argument("--dibujar", type=int, default=0, help="guarda N imágenes con solapamientos marcados")
@@ -74,7 +79,7 @@ def main():
     instancias = defaultdict(Counter)
     imagenes_con = defaultdict(Counter)
     resoluciones = Counter()
-    problemas, tamanos, iou_vecinos = [], [], []
+    problemas, tamanos, iou_vecinos, diametros = [], [], [], []
     dibujadas = 0
 
     for split in ("train", "val", "test"):
@@ -87,8 +92,9 @@ def main():
             W, H = im.size
             resoluciones[(W, H)] += 1
             cajas = [(c, xywhn_a_xyxy(xc, yc, w, h, W, H)) for c, xc, yc, w, h in etiquetas]
-            for c, _ in cajas:
+            for c, b in cajas:
                 instancias[split][names[c]] += 1
+                diametros.append((split, str(img_path), names[c], ((b[2] - b[0]) * (b[3] - b[1])) ** 0.5))
             for n in {names[c] for c, _ in cajas}:
                 imagenes_con[split][n] += 1
 
@@ -126,6 +132,12 @@ def main():
                     tamanos.append([split, img_path.name, names[c], round(caja_d, 1),
                                     m.get("area"), m.get("largo"), m.get("ancho"), m.get("pegado")])
 
+    # ---------- 4 (se calcula antes para incluirlo en el CSV). Cajas pequeñas ----------
+    mediana = float(np.median([d for *_, d in diametros])) if diametros else 0.0
+    pequenas = [d for d in diametros if d[3] < args.frac_pequena * mediana]
+    for split, ruta, clase, d in pequenas:
+        problemas.append([split, ruta, "caja_pequena", clase, "", "", round(d / mediana, 2)])
+
     # ---------- 1. Solapamientos ----------
     with open(out / "problemas_solapamiento.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -148,6 +160,16 @@ def main():
             print("  -> OK: con el iou de NMS por defecto (0.5–0.7) no se eliminan granos pegados reales")
         else:
             print(f"  -> usa un NMS con iou > {q[2]:.2f}; si no, se pierde uno de cada par de granos pegados")
+
+    print(f"\n=== Cajas pequeñas (lado medio < {args.frac_pequena:.0%} de la mediana = "
+          f"{args.frac_pequena * mediana:.0f} px) ===")
+    if pequenas:
+        total = Counter(c for _, _, c, _ in diametros)
+        for clase, n in Counter(c for _, _, c, _ in pequenas).most_common():
+            print(f"  {clase:<14} {n:>6}  ({n / total[clase]:.0%} de la clase)")
+        print("  -> revisa si en esas se etiquetó solo el defecto y no el grano entero (ver 0b_mosaico_clases.py)")
+    else:
+        print("  ninguna")
 
     # ---------- 2. Tamaños ----------
     if len(resoluciones) > 1:

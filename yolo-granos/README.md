@@ -33,6 +33,21 @@ python 0_auditar_dataset.py --data data.yaml --grande sanog --pequeno sanop --di
 
 Detalle en `auditoria/problemas_solapamiento.csv` y `auditoria/tamanos.csv`.
 
+También reporta las **cajas anormalmente pequeñas** por clase (`caja_pequena` en el CSV). Suelen indicar que
+en algunas imágenes se etiquetó solo el defecto, por ejemplo el orificio de broca, y en otras el grano entero.
+
+### Verificación visual de cada clase
+
+```bash
+python 0b_mosaico_clases.py --data data.yaml --modelo ruta/best.pt
+```
+
+- Imprime la tabla índice → nombre en el `data.yaml` → nombre guardado en el modelo → número de etiquetas.
+  Marca los índices sin etiquetas y los nombres que no coinciden.
+- Genera un mosaico por índice en `auditoria/mosaicos/`. Todos los recortes usan la misma ventana en píxeles,
+  así que también se compara el tamaño. Si el mosaico de "vinagre" no muestra granos vinagre, los nombres
+  están desalineados con los índices de las etiquetas.
+
 > Medir en píxeles solo es válido si la cámara está siempre a la misma distancia. La auditoría avisa si hay
 > imágenes con resoluciones distintas.
 
