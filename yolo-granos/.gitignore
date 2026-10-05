@@ -1,0 +1,5 @@
+runs/
+dataset_cls/
+resultados_dos_etapas/
+__pycache__/
+*.pt

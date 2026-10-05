@@ -1,0 +1,186 @@
+"""Paso 4 — Inferencia y evaluación del pipeline detector + clasificador.
+
+Modo `predecir`: procesa imágenes y escribe un CSV (imagen, caja, clase, confianzas) y, opcionalmente,
+imágenes anotadas.
+
+Modo `evaluar`: corre el pipeline sobre un split del data.yaml ORIGINAL (14 clases), empareja cada
+detección con la etiqueta real (IoU >= 0.5) y construye una matriz de confusión con el mismo formato
+que la de Ultralytics (filas = predicción, columnas = real, última fila/columna = background), para
+compararla directamente con la del modelo de una sola etapa.
+
+Uso:
+  python 4_dos_etapas.py evaluar  --det det.pt --cls cls.pt --data data.yaml --split val
+  python 4_dos_etapas.py predecir --det det.pt --cls cls.pt --source carpeta_imagenes/ --guardar-imagenes
+"""
+
+import argparse
+import csv
+from pathlib import Path
+
+import numpy as np
+from PIL import Image, ImageDraw
+from ultralytics import YOLO
+
+from comun import IMG_EXTS, cargar_data_yaml, iou, leer_etiquetas, listar_imagenes, recortar, xywhn_a_xyxy
+
+
+class DosEtapas:
+    def __init__(self, det, cls, imgsz_det=1024, imgsz_cls=224, conf=0.25, iou_nms=0.5, margen=0.15, device=None):
+        self.det, self.cls = YOLO(det), YOLO(cls)
+        self.imgsz_det, self.imgsz_cls = imgsz_det, imgsz_cls
+        self.conf, self.iou_nms, self.margen, self.device = conf, iou_nms, margen, device
+        self.names = self.cls.names  # {i: nombre}
+
+    def __call__(self, img_path):
+        """Devuelve [(xyxy, nombre_clase, conf_clase, conf_det)] para una imagen."""
+        im = Image.open(img_path).convert("RGB")
+        r = self.det.predict(im, imgsz=self.imgsz_det, conf=self.conf, iou=self.iou_nms,
+                             agnostic_nms=True, device=self.device, verbose=False)[0]
+        cajas = r.boxes.xyxy.cpu().numpy() if len(r.boxes) else np.zeros((0, 4))
+        conf_det = r.boxes.conf.cpu().numpy() if len(r.boxes) else np.zeros(0)
+        if not len(cajas):
+            return im, []
+        recortes = [recortar(im, c, self.margen) for c in cajas]
+        salida = []
+        # en lotes para no saturar memoria con imágenes de muchos granos
+        for i in range(0, len(recortes), 64):
+            res = self.cls.predict(recortes[i:i + 64], imgsz=self.imgsz_cls, device=self.device, verbose=False)
+            for j, rc in enumerate(res):
+                k = i + j
+                top = int(rc.probs.top1)
+                salida.append((cajas[k].tolist(), self.names[top], float(rc.probs.top1conf), float(conf_det[k])))
+        return im, salida
+
+
+def evaluar(pipe, args):
+    data = cargar_data_yaml(args.data, args.root)
+    names = data["names"]
+    nc = len(names)
+    faltan = set(names) - set(pipe.names.values())
+    if faltan:
+        raise SystemExit(f"El clasificador no tiene las clases: {sorted(faltan)}")
+    idx = {n: i for i, n in enumerate(names)}
+    m = np.zeros((nc + 1, nc + 1), dtype=int)
+
+    imagenes = listar_imagenes(data[args.split])
+    for n_img, img_path in enumerate(imagenes, 1):
+        im, preds = pipe(img_path)
+        W, H = im.size
+        gts = [(c, xywhn_a_xyxy(xc, yc, w, h, W, H)) for c, xc, yc, w, h in leer_etiquetas(img_path)]
+        # emparejamiento voraz por IoU descendente (como Ultralytics: solo la caja, no la clase)
+        pares = sorted(((iou(p[0], g[1]), pi, gi) for pi, p in enumerate(preds) for gi, g in enumerate(gts)),
+                       reverse=True)
+        usados_p, usados_g = set(), set()
+        for v, pi, gi in pares:
+            if v < 0.5:
+                break
+            if pi in usados_p or gi in usados_g:
+                continue
+            usados_p.add(pi)
+            usados_g.add(gi)
+            m[idx[preds[pi][1]], gts[gi][0]] += 1
+        for pi, p in enumerate(preds):
+            if pi not in usados_p:
+                m[idx[p[1]], nc] += 1  # falso positivo
+        for gi, g in enumerate(gts):
+            if gi not in usados_g:
+                m[nc, g[0]] += 1  # no detectado
+        if n_img % 50 == 0:
+            print(f"  {n_img}/{len(imagenes)} imágenes")
+
+    reales = m[:, :nc].sum(0)
+    pred = m[:nc, :].sum(1)
+    diag = m.diagonal()[:nc]
+    print(f"\nGranos reales: {reales.sum()}  |  clase correcta: {diag.sum()} ({diag.sum() / max(reales.sum(), 1):.1%})"
+          f"  |  no detectados: {m[nc, :nc].sum()}  |  sobrantes (FP): {m[:nc, nc].sum()}")
+    print(f"\n{'clase':<14}{'reales':>8}{'recall':>9}{'precisión':>11}")
+    for i, n in enumerate(names):
+        rec = diag[i] / reales[i] if reales[i] else float("nan")
+        prec = diag[i] / pred[i] if pred[i] else float("nan")
+        print(f"{n:<14}{reales[i]:>8}{rec:>9.1%}{prec:>11.1%}")
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    etiquetas = names + ["background"]
+    with open(out / "matriz_confusion.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["pred \\ real"] + etiquetas)
+        for i, fila in enumerate(m):
+            w.writerow([etiquetas[i]] + fila.tolist())
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(12, 9))
+        ax.imshow(m, cmap="Blues")
+        for (i, j), v in np.ndenumerate(m):
+            if v:
+                ax.text(j, i, v, ha="center", va="center", fontsize=8,
+                        color="white" if v > m.max() * 0.6 else "black")
+        ax.set_xticks(range(nc + 1), etiquetas, rotation=90)
+        ax.set_yticks(range(nc + 1), etiquetas)
+        ax.set_xlabel("Real")
+        ax.set_ylabel("Predicho")
+        ax.set_title("Matriz de confusión — dos etapas")
+        fig.tight_layout()
+        fig.savefig(out / "matriz_confusion.png", dpi=150)
+    except ImportError:
+        pass
+    print(f"\nMatriz guardada en {out}/matriz_confusion.csv (y .png)")
+
+
+def predecir(pipe, args):
+    src = Path(args.source)
+    imagenes = sorted(f for f in src.rglob("*") if f.suffix.lower() in IMG_EXTS) if src.is_dir() else [src]
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "predicciones.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["imagen", "x1", "y1", "x2", "y2", "clase", "conf_clase", "conf_det"])
+        for img_path in imagenes:
+            im, preds = pipe(img_path)
+            for caja, nombre, cc, cd in preds:
+                w.writerow([img_path.name, *(round(v, 1) for v in caja), nombre, round(cc, 4), round(cd, 4)])
+            if args.guardar_imagenes:
+                d = ImageDraw.Draw(im)
+                for caja, nombre, cc, _ in preds:
+                    d.rectangle(caja, outline=(255, 0, 0), width=2)
+                    d.text((caja[0] + 2, caja[1] + 2), f"{nombre} {cc:.2f}", fill=(255, 255, 0))
+                im.save(out / img_path.name)
+            print(f"{img_path.name}: {len(preds)} granos")
+    print(f"\nResultados en {out}/predicciones.csv")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("modo", choices=["evaluar", "predecir"])
+    ap.add_argument("--det", required=True, help="pesos del detector de una clase")
+    ap.add_argument("--cls", required=True, help="pesos del clasificador")
+    ap.add_argument("--imgsz-det", type=int, default=1024)
+    ap.add_argument("--imgsz-cls", type=int, default=224)
+    ap.add_argument("--conf", type=float, default=0.25)
+    ap.add_argument("--margen", type=float, default=0.15, help="debe coincidir con el usado en 2_recortar_granos.py")
+    ap.add_argument("--device", default=None)
+    ap.add_argument("--data", help="(evaluar) data.yaml original con las 14 clases")
+    ap.add_argument("--root", default=None)
+    ap.add_argument("--split", default="val")
+    ap.add_argument("--source", help="(predecir) imagen o carpeta")
+    ap.add_argument("--guardar-imagenes", action="store_true")
+    ap.add_argument("--out", default="resultados_dos_etapas")
+    args = ap.parse_args()
+
+    pipe = DosEtapas(args.det, args.cls, args.imgsz_det, args.imgsz_cls, args.conf, margen=args.margen,
+                     device=args.device)
+    if args.modo == "evaluar":
+        if not args.data:
+            ap.error("evaluar requiere --data")
+        evaluar(pipe, args)
+    else:
+        if not args.source:
+            ap.error("predecir requiere --source")
+        predecir(pipe, args)
+
+
+if __name__ == "__main__":
+    main()
