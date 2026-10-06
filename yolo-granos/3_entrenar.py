@@ -29,18 +29,29 @@ COLOR_SUAVE = {"hsv_h": 0.0, "hsv_s": 0.1, "hsv_v": 0.15}
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("etapa", choices=["completo", "detector", "clasificador"])
-    ap.add_argument("--data", required=True)
+    ap.add_argument("--data", default=None)
     ap.add_argument("--model", default=None)
     ap.add_argument("--imgsz", type=int, default=None)
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--batch", type=int, default=16, help="-1 = automático según la memoria de la GPU")
     ap.add_argument("--patience", type=int, default=30)
     ap.add_argument("--device", default=None)
+    ap.add_argument("--project", default=None, help="carpeta donde guardar runs (ej. en Google Drive)")
+    ap.add_argument("--resume", default=None, metavar="LAST_PT",
+                    help="retoma un entrenamiento interrumpido desde su weights/last.pt")
     args = ap.parse_args()
+
+    if args.resume:
+        YOLO(args.resume).train(resume=True)
+        return
+    if not args.data:
+        ap.error("--data es obligatorio (salvo con --resume)")
 
     comunes = {"data": args.data, "batch": args.batch, "patience": args.patience, **COLOR_SUAVE}
     if args.device is not None:
         comunes["device"] = args.device
+    if args.project:
+        comunes["project"] = args.project
 
     if args.etapa == "completo":
         model = YOLO(args.model or "yolo11s.pt")

@@ -7,6 +7,17 @@ Scripts para diagnosticar el modelo YOLO de 14 clases de defectos y probar la al
 pip install -r requirements.txt   # ultralytics >= 8.3
 ```
 
+## Entrenar en Google Colab
+
+Abre `entrenar_colab.ipynb` en Colab (*Archivo → Abrir cuaderno → GitHub*, rama
+`claude/yolo-grain-detection-kqf5bz`), activa la GPU y sube el dataset a Drive como
+`MiDrive/granos/dataset_v2.zip`. El notebook:
+
+- copia el dataset al disco local de Colab y corrige el `path` del `data.yaml`;
+- entrena la línea base de una etapa y las dos etapas, guardando los pesos en Drive (`--project`);
+- compara ambos enfoques en el split de test;
+- si Colab se desconecta, retoma con `python 3_entrenar.py <etapa> --resume .../weights/last.pt`.
+
 ## Re-exportar desde Label Studio y empezar limpio
 
 ```bash
