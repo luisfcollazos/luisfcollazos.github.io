@@ -62,6 +62,15 @@ python 0_auditar_dataset.py --data data.yaml --grande sanog --pequeno sanop --di
 
 Detalle en `auditoria/problemas_solapamiento.csv` y `auditoria/tamanos.csv`.
 
+Para corregir en Label Studio las cajas que contienen a otra:
+
+```bash
+python revisar_contenidas.py --data dataset_v2/data.yaml --out auditoria/contenidas
+```
+
+Genera una imagen ampliada por caso (caja exterior en azul, caja contenida en rojo) y la posición de cada
+caja en %, en las mismas unidades que muestra Label Studio.
+
 También reporta las **cajas anormalmente pequeñas** por clase (`caja_pequena` en el CSV). Suelen indicar que
 en algunas imágenes se etiquetó solo el defecto, por ejemplo el orificio de broca, y en otras el grano entero.
 
