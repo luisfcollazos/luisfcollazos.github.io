@@ -50,10 +50,11 @@ def medida_caja(caja, metrica):
 
 class DosEtapas:
     def __init__(self, det, cls, imgsz_det=1024, imgsz_cls=224, conf=0.25, iou_nms=0.5, margen=0.15, device=None,
-                 tamano=None):
+                 tamano=None, ventana=0):
         self.det, self.cls = YOLO(det), YOLO(cls)
         self.imgsz_det, self.imgsz_cls = imgsz_det, imgsz_cls
         self.conf, self.iou_nms, self.margen, self.device = conf, iou_nms, margen, device
+        self.ventana = ventana
         self.names = self.cls.names  # {i: nombre}
         self.tamano = tamano
         self.clases_salida = set(self.names.values())
@@ -82,7 +83,7 @@ class DosEtapas:
         conf_det = r.boxes.conf.cpu().numpy() if len(r.boxes) else np.zeros(0)
         if not len(cajas):
             return im, []
-        recortes = [recortar(im, c, self.margen) for c in cajas]
+        recortes = [recortar(im, c, self.margen, ventana=self.ventana) for c in cajas]
         salida = []
         # en lotes para no saturar memoria con imágenes de muchos granos
         for i in range(0, len(recortes), 64):
@@ -203,7 +204,7 @@ def main():
     ap.add_argument("modo", choices=["evaluar", "predecir"])
     ap.add_argument("--det", required=True, help="pesos del detector de una clase")
     ap.add_argument("--cls", required=True, help="pesos del clasificador")
-    ap.add_argument("--imgsz-det", type=int, default=1024)
+    ap.add_argument("--imgsz-det", type=int, default=1280)
     ap.add_argument("--imgsz-cls", type=int, default=224)
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--iou", type=float, default=0.5,
@@ -211,6 +212,7 @@ def main():
     ap.add_argument("--tamano", default=None, metavar="CLASE:METRICA:UMBRAL:GRANDE:PEQUENO",
                     help="separa una clase fusionada por tamaño medido, ej. sano:ancho:23.5:sanog:sanop")
     ap.add_argument("--margen", type=float, default=0.15, help="debe coincidir con el usado en 2_recortar_granos.py")
+    ap.add_argument("--ventana", type=int, default=0, help="debe coincidir con el usado en 2_recortar_granos.py")
     ap.add_argument("--device", default=None)
     ap.add_argument("--data", help="(evaluar) data.yaml original con las 14 clases")
     ap.add_argument("--root", default=None)
@@ -221,7 +223,7 @@ def main():
     args = ap.parse_args()
 
     pipe = DosEtapas(args.det, args.cls, args.imgsz_det, args.imgsz_cls, args.conf, iou_nms=args.iou,
-                     margen=args.margen, device=args.device,
+                     margen=args.margen, device=args.device, ventana=args.ventana,
                      tamano=parsear_tamano(args.tamano) if args.tamano else None)
     if args.modo == "evaluar":
         if not args.data:

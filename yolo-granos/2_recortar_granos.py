@@ -11,6 +11,10 @@ Genera la estructura que espera `yolo classify`:
 Además puede crear un data.yaml de UNA sola clase ("grano") que reutiliza las mismas imágenes,
 para entrenar el detector de la etapa 1 sin duplicar el dataset.
 
+Con --ventana 128 cada recorte es un cuadrado fijo de 128 px centrado en el grano, sin reescalar al
+grano: un grano grande ocupa más del recorte que uno pequeño, así el clasificador puede usar el tamaño
+(sanog/sanop, malla). Usa el mismo valor en 4_dos_etapas.py.
+
 Con --fusionar se pueden unir clases que solo se distinguen por tamaño (ej. sanog/sanop): al
 reescalar cada recorte a 224 px el clasificador pierde el tamaño real, así que es mejor clasificar
 "sano" y decidir grande/pequeño midiendo el grano (ver 0_auditar_dataset.py y 4_dos_etapas.py).
@@ -39,6 +43,8 @@ def main():
     ap.add_argument("--root", default=None, help="sobrescribe el campo `path` del data.yaml")
     ap.add_argument("--out", default="dataset_cls")
     ap.add_argument("--margen", type=float, default=0.15, help="margen alrededor de la caja (fracción)")
+    ap.add_argument("--ventana", type=int, default=0,
+                    help="recorte cuadrado fijo de N px (conserva el tamaño real; recomendado ~128). 0 = ajustado a la caja")
     ap.add_argument("--min-px", type=int, default=8, help="descarta cajas más pequeñas que esto")
     ap.add_argument("--balancear", type=int, default=0,
                     help="en train, duplica recortes de clases con menos de N ejemplos hasta llegar a N")
@@ -89,7 +95,7 @@ def main():
                     nombre = destino_de[names[cls]]
                     destino = out / split / nombre / f"{img_path.stem}_{i:03d}.jpg"
                     destino.parent.mkdir(parents=True, exist_ok=True)
-                    recortar(im, (x1, y1, x2, y2), args.margen).save(destino, quality=95)
+                    recortar(im, (x1, y1, x2, y2), args.margen, ventana=args.ventana).save(destino, quality=95)
                     conteo[nombre] += 1
                     archivos_por_clase[nombre].append(destino)
 

@@ -136,10 +136,13 @@ Las matrices quedan en `runs/detect/diag_*_matriz/`.
 ## 2. Dataset de clasificación (recortes de cada grano)
 
 ```bash
-python 2_recortar_granos.py --data data.yaml --out dataset_cls --balancear 600 --max-por-clase 3000 --yaml-detector data_1clase.yaml
+python 2_recortar_granos.py --data data.yaml --out dataset_cls --ventana 128 --balancear 600 --max-por-clase 3000 --yaml-detector data_1clase.yaml
 ```
 
-- Recorta cada caja **etiquetada** con un 15 % de margen y en formato cuadrado (`--margen`).
+- Recorta cada caja **etiquetada**. Con `--ventana 128` (recomendado) cada recorte es un cuadrado fijo de 128 px
+  centrado en el grano, con la misma escala para todos, así el clasificador ve el tamaño real (sanog/sanop, malla).
+  Sin `--ventana`, el recorte se ajusta a la caja con un 15 % de margen (`--margen`) y se pierde el tamaño.
+  Usa el mismo `--ventana` en `4_dos_etapas.py`.
 - `--balancear N` duplica recortes en *train* para las clases con menos de N ejemplos, y `--max-por-clase M`
   submuestrea la clase dominante a M recortes.
 - `--yaml-detector` crea un `data.yaml` de una sola clase que reutiliza las mismas imágenes y etiquetas.
@@ -153,7 +156,10 @@ python 3_entrenar.py detector     --data data_1clase.yaml --model yolo11s.pt    
 python 3_entrenar.py clasificador --data dataset_cls      --model yolo11s-cls.pt --imgsz 224
 ```
 
-Ambos usan **aumentos de color suaves** (`hsv_h=0, hsv_s=0.1, hsv_v=0.15`) para no destruir el color
+El clasificador desactiva **RandAugment**, que Ultralytics activa por defecto y que altera brillo, contraste y color
+(además anula los HSV suaves). También limita el RandomResizedCrop (`scale=0.1`) para no borrar el tamaño.
+
+Todos usan **aumentos de color suaves** (`hsv_h=0, hsv_s=0.1, hsv_v=0.15`) para no destruir el color
 que distingue negro, oscuro, vinagre, oreado, cardenillo y blanqueado. También usan rotación libre y volteo
 vertical, porque un grano no tiene orientación.
 

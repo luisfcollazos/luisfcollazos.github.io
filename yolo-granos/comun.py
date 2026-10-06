@@ -85,12 +85,19 @@ def xywhn_a_xyxy(xc: float, yc: float, w: float, h: float, ancho: int, alto: int
     return ((xc - w / 2) * ancho, (yc - h / 2) * alto, (xc + w / 2) * ancho, (yc + h / 2) * alto)
 
 
-def recortar(img: Image.Image, caja_xyxy, margen: float = 0.15, cuadrado: bool = True) -> Image.Image:
-    """Recorta una caja con margen relativo; si `cuadrado`, usa el lado mayor para no deformar el grano."""
+def recortar(img: Image.Image, caja_xyxy, margen: float = 0.15, cuadrado: bool = True,
+             ventana: int = 0) -> Image.Image:
+    """Recorta una caja con margen relativo; si `cuadrado`, usa el lado mayor para no deformar el grano.
+
+    Con `ventana` > 0 el recorte es un cuadrado FIJO de `ventana` px centrado en el grano (solo crece si el
+    grano no cabe). Así todos los recortes tienen la misma escala y el clasificador ve el tamaño real.
+    """
     x1, y1, x2, y2 = caja_xyxy
     cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
     w, h = (x2 - x1) * (1 + 2 * margen), (y2 - y1) * (1 + 2 * margen)
-    if cuadrado:
+    if ventana:
+        w = h = max(ventana, w, h)
+    elif cuadrado:
         w = h = max(w, h)
     caja = (int(round(cx - w / 2)), int(round(cy - h / 2)), int(round(cx + w / 2)), int(round(cy + h / 2)))
     # PIL rellena con negro lo que queda fuera de la imagen

@@ -9,6 +9,10 @@ distingue negro / oscuro / vinagre / oreado / cardenillo / blanqueado, por eso a
 También `completo`: reentrena el detector de 14 clases de una sola etapa con la misma configuración
 (color suave, imgsz alto), como línea base justa para comparar con las dos etapas.
 
+En el clasificador además se desactivan RandAugment (activado por defecto en Ultralytics: altera brillo,
+contraste y color, y anula los HSV suaves) y casi todo el RandomResizedCrop (reescala el grano y borra
+la pista de tamaño que distingue sanog/sanop/malla).
+
 Uso:
   python 3_entrenar.py completo     --data data.yaml        --model yolo11s.pt     --imgsz 1280
   python 3_entrenar.py detector     --data data_1clase.yaml --model yolo11s.pt     --imgsz 1280
@@ -67,7 +71,9 @@ def main():
             imgsz=args.imgsz or 224,
             epochs=args.epochs or 100,
             flipud=0.5,
-            degrees=180,
+            auto_augment=None,  # RandAugment cambia el color: justo lo que distingue negro/vinagre/oscuro...
+            scale=0.1,  # RandomResizedCrop entre 90 % y 100 % del recorte: conserva el tamaño del grano
+            erasing=0.1,  # el borrado aleatorio por defecto (0.4) puede tapar el orificio de broca
             dropout=0.2,
             name="cls_granos",
         )
