@@ -27,6 +27,71 @@ import yaml
 from comun import IMG_EXTS
 
 
+def desviacion(clases_de: dict, split_de: dict, fracs: dict) -> float:
+    """Peor desviación relativa entre lo que recibe cada split (por clase y en imágenes) y su proporción."""
+    total, n_img = Counter(), Counter(split_de.values())
+    asignado = {s: Counter() for s in fracs}
+    for st, cs in clases_de.items():
+        total.update(cs)
+        asignado[split_de[st]].update(cs)
+    peor = max(abs(n_img[s] / len(clases_de) - f) / f for s, f in fracs.items() if f > 0)
+    for s, f in fracs.items():
+        if f > 0:
+            peor = max([peor] + [abs(asignado[s][c] / total[c] - f) / f for c in total])
+    return peor
+
+
+def repartir(clases_de: dict, fracs: dict, seed: int = 0, intentos: int = 300) -> dict:
+    """Prueba `intentos` órdenes aleatorios del reparto voraz y devuelve el más parejo."""
+    mejor, mejor_d = None, float("inf")
+    for k in range(intentos):
+        split_de = _repartir_una_vez(clases_de, fracs, seed * 100003 + k)
+        d = desviacion(clases_de, split_de, fracs)
+        if d < mejor_d:
+            mejor, mejor_d = split_de, d
+    return mejor
+
+
+def _repartir_una_vez(clases_de: dict, fracs: dict, seed: int) -> dict:
+    """Reparto estratificado multi-etiqueta (cada imagen tiene muchas clases).
+
+    Recorre las imágenes empezando por las que contienen las clases más raras y asigna cada una al split
+    al que más le falta, sumando el déficit relativo de TODAS sus clases (las raras pesan más) y el
+    déficit de número de imágenes, para que cada split reciba su proporción de clases y de imágenes.
+    """
+    rng = random.Random(seed)
+    total = Counter()
+    for cs in clases_de.values():
+        total.update(cs)
+    splits = [s for s in fracs if fracs[s] > 0]
+    objetivo = {s: {c: total[c] * fracs[s] for c in total} for s in splits}
+    obj_img = {s: len(clases_de) * fracs[s] for s in splits}
+    asignado = {s: Counter() for s in splits}
+    n_img = Counter()
+
+    stems = list(clases_de)
+    rng.shuffle(stems)
+    stems.sort(key=lambda st: min((total[c] for c in clases_de[st]), default=10**9))
+
+    def necesidad(s, cs):
+        if n_img[s] >= obj_img[s] + 1:  # no pasarse del número de imágenes
+            return -1e9
+        peso_total = sum(n / total[c] for c, n in cs.items()) or 1.0
+        clases = sum((n / total[c]) * (objetivo[s][c] - asignado[s][c]) / max(objetivo[s][c], 1e-9)
+                     for c, n in cs.items()) / peso_total
+        imagenes = (obj_img[s] - n_img[s]) / obj_img[s]
+        return clases + imagenes
+
+    split_de = {}
+    for st in stems:
+        cs = clases_de[st]
+        s = max(splits, key=lambda s: necesidad(s, cs))
+        split_de[st] = s
+        asignado[s].update(cs)
+        n_img[s] += 1
+    return split_de
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--export", required=True, help="carpeta del export YOLO de Label Studio")
@@ -81,28 +146,13 @@ def main():
         print(f"\n!! Clases SIN etiquetas: {vacias}")
 
     # --- reparto estratificado ---
-    rng = random.Random(args.seed)
     fracs = {"train": 1 - args.val - args.test, "val": args.val, "test": args.test}
-    objetivo = {s: {c: total[c] * f for c in total} for s, f in fracs.items()}
+    split_de = repartir(clases_de, fracs, args.seed)
+    print(f"\nPeor desviación de una clase respecto a su proporción: {desviacion(clases_de, split_de, fracs):.0%}")
     asignado = {s: Counter() for s in fracs}
-    n_img = {s: 0 for s in fracs}
-    stems = list(imagenes)
-    rng.shuffle(stems)
-    # primero las imágenes cuya clase más rara es más rara
-    stems.sort(key=lambda s: min((total[c] for c in clases_de[s]), default=10**9))
-    split_de = {}
-    for stem in stems:
-        cs = clases_de[stem]
-        if cs:
-            rara = min(cs, key=lambda c: total[c])
-            # el split al que más le falta (en proporción) de la clase rara de esta imagen
-            split = max(fracs, key=lambda s: (objetivo[s][rara] - asignado[s][rara]) / max(objetivo[s][rara], 1e-9)
-                        if fracs[s] > 0 else -1e9)
-        else:
-            split = max(fracs, key=lambda s: fracs[s] * len(stems) - n_img[s])
-        split_de[stem] = split
-        asignado[split].update(cs)
-        n_img[split] += 1
+    n_img = Counter(split_de.values())
+    for stem, split in split_de.items():
+        asignado[split].update(clases_de[stem])
 
     for stem, split in split_de.items():
         for sub, src in (("images", imagenes[stem]), ("labels", etiquetas.get(stem))):

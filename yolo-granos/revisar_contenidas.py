@@ -1,4 +1,5 @@
-"""Ayuda a corregir en Label Studio las cajas que contienen a otra ("caja_dentro_de_otra" en la auditoría).
+"""Ayuda a corregir en Label Studio las cajas que contienen a otra ("caja_dentro_de_otra" en la auditoría)
+y los duplicados (dos cajas casi iguales sobre el mismo grano, "duplicado_*").
 
 Para cada par genera una imagen ampliada con:
   * en AZUL la caja grande (exterior)
@@ -13,6 +14,8 @@ Casos típicos y qué hacer:
      -> borrar la roja; si el defecto es la clase correcta, cambiar la clase de la azul.
   3. Un fragmento pequeño (partido) que realmente está ENCIMA de otro grano
      -> está bien; no hay que cambiar nada.
+  4. DUPLICADO: dos cajas casi iguales sobre el mismo grano (suele pasar al corregir: se dibuja una caja
+     nueva sin borrar la anterior) -> borrar la que tiene la clase equivocada.
 
 Uso:
   python revisar_contenidas.py --data dataset_v2/data.yaml --out auditoria/contenidas
@@ -69,8 +72,12 @@ def main():
             for i in range(len(cajas)):
                 for j in range(i + 1, len(cajas)):
                     (ci, bi), (cj, bj) = cajas[i], cajas[j]
-                    # mismo criterio que la auditoría: no es duplicado, pero una contiene a la otra
-                    if iou(bi, bj) >= args.iou_dup or contencion(bi, bj) < args.contencion:
+                    # mismo criterio que la auditoría
+                    if iou(bi, bj) >= args.iou_dup:
+                        tipo = "duplicado"
+                    elif contencion(bi, bj) >= args.contencion:
+                        tipo = "contenida"
+                    else:
                         continue
                     (c_ext, b_ext), (c_int, b_int) = sorted([(ci, bi), (cj, bj)], key=lambda x: -area(x[1]))
                     n = len(filas) + 1
@@ -85,18 +92,18 @@ def main():
                     for b, color in ((b_ext, (0, 90, 255)), (b_int, (255, 0, 0))):
                         d.rectangle([(b[0] - x0) * esc, (b[1] - y0) * esc, (b[2] - x0) * esc, (b[3] - y0) * esc],
                                     outline=color, width=3)
-                    d.text((4, 4), f"#{n} azul={names[c_ext]}  rojo={names[c_int]}", fill=(0, 0, 0))
+                    d.text((4, 4), f"#{n} {tipo}: azul={names[c_ext]}  rojo={names[c_int]}", fill=(0, 0, 0))
                     rec.save(out / f"{n:02d}_{img_path.stem}.jpg", quality=92)
-                    filas.append([n, split, img_path.name, names[c_ext], pct(b_ext, W, H),
+                    filas.append([n, tipo, split, img_path.name, names[c_ext], pct(b_ext, W, H),
                                   names[c_int], pct(b_int, W, H), round(contencion(bi, bj), 2)])
 
     with open(out / "contenidas.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["n", "split", "imagen", "clase_exterior(azul)", "pos_exterior",
+        w.writerow(["n", "tipo", "split", "imagen", "clase_exterior(azul)", "pos_exterior",
                     "clase_interior(rojo)", "pos_interior", "contencion"])
         w.writerows(filas)
-    for n, split, img, ce, pe, ci, pi, k in filas:
-        print(f"#{n:<3} {img}\n     azul {ce:<11} {pe}\n     rojo {ci:<11} {pi}")
+    for n, tipo, split, img, ce, pe, ci, pi, k in filas:
+        print(f"#{n:<3} {tipo:<10} {img}\n     azul {ce:<11} {pe}\n     rojo {ci:<11} {pi}")
     print(f"\n{len(filas)} pares. Imágenes ampliadas y contenidas.csv en {out}/")
 
 

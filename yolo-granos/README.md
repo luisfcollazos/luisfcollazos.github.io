@@ -33,7 +33,8 @@ python 0_auditar_dataset.py   --data dataset_v2/data.yaml
 python 0b_mosaico_clases.py   --data dataset_v2/data.yaml
 ```
 
-`preparar_export.py` toma los nombres del `classes.txt` del export (el mismo orden que los índices),
+`preparar_export.py` toma los nombres del `classes.txt` del export (el mismo orden que los índices), reparte
+las imágenes probando cientos de órdenes y elige el reparto más parejo por clase y por número de imágenes,
 valida las etiquetas y nunca escribe sobre un dataset existente. Así no sobreviven `.txt` viejos de un export anterior.
 
 ## 0. Antes de nada: revisa el umbral de la matriz de confusión
@@ -62,13 +63,13 @@ python 0_auditar_dataset.py --data data.yaml --grande sanog --pequeno sanop --di
 
 Detalle en `auditoria/problemas_solapamiento.csv` y `auditoria/tamanos.csv`.
 
-Para corregir en Label Studio las cajas que contienen a otra:
+Para corregir en Label Studio las cajas que contienen a otra y los duplicados:
 
 ```bash
 python revisar_contenidas.py --data dataset_v2/data.yaml --out auditoria/contenidas
 ```
 
-Genera una imagen ampliada por caso (caja exterior en azul, caja contenida en rojo) y la posición de cada
+Genera una imagen ampliada por caso (caja exterior o primera en azul, contenida o duplicada en rojo) y la posición de cada
 caja en %, en las mismas unidades que muestra Label Studio.
 
 También reporta las **cajas anormalmente pequeñas** por clase (`caja_pequena` en el CSV). Suelen indicar que
