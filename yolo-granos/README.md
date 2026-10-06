@@ -136,17 +136,19 @@ Las matrices quedan en `runs/detect/diag_*_matriz/`.
 ## 2. Dataset de clasificación (recortes de cada grano)
 
 ```bash
-python 2_recortar_granos.py --data data.yaml --out dataset_cls --balancear 300 --yaml-detector data_1clase.yaml
+python 2_recortar_granos.py --data data.yaml --out dataset_cls --balancear 600 --max-por-clase 3000 --yaml-detector data_1clase.yaml
 ```
 
 - Recorta cada caja **etiquetada** con un 15 % de margen y en formato cuadrado (`--margen`).
-- `--balancear N` duplica recortes en *train* para las clases con menos de N ejemplos.
+- `--balancear N` duplica recortes en *train* para las clases con menos de N ejemplos, y `--max-por-clase M`
+  submuestrea la clase dominante a M recortes.
 - `--yaml-detector` crea un `data.yaml` de una sola clase que reutiliza las mismas imágenes y etiquetas.
 - Imprime cuántos recortes hay por clase y split, lo que sirve para ver el desbalance.
 
 ## 3. Entrenamiento
 
 ```bash
+python 3_entrenar.py completo     --data data.yaml        --model yolo11s.pt     --imgsz 1280   # línea base 1 etapa
 python 3_entrenar.py detector     --data data_1clase.yaml --model yolo11s.pt     --imgsz 1024
 python 3_entrenar.py clasificador --data dataset_cls      --model yolo11s-cls.pt --imgsz 224
 ```

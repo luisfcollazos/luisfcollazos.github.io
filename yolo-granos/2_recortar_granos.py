@@ -16,7 +16,8 @@ reescalar cada recorte a 224 px el clasificador pierde el tamaño real, así que
 "sano" y decidir grande/pequeño midiendo el grano (ver 0_auditar_dataset.py y 4_dos_etapas.py).
 
 Uso:
-  python 2_recortar_granos.py --data data.yaml --out dataset_cls --balancear 300 --yaml-detector data_1clase.yaml \
+  python 2_recortar_granos.py --data data.yaml --out dataset_cls --balancear 600 --max-por-clase 3000 \
+      --yaml-detector data_1clase.yaml \
       --fusionar sano=sanog,sanop
 """
 
@@ -42,6 +43,8 @@ def main():
     ap.add_argument("--balancear", type=int, default=0,
                     help="en train, duplica recortes de clases con menos de N ejemplos hasta llegar a N")
     ap.add_argument("--yaml-detector", default=None, help="si se da, escribe un data.yaml de una sola clase")
+    ap.add_argument("--max-por-clase", type=int, default=0,
+                    help="en train, deja como máximo N recortes por clase (submuestrea la clase dominante)")
     ap.add_argument("--fusionar", action="append", default=[], metavar="NUEVA=A,B",
                     help="une clases en una sola carpeta; se puede repetir")
     ap.add_argument("--seed", type=int, default=0)
@@ -94,8 +97,15 @@ def main():
         for n in clases_salida:
             (out / split / n).mkdir(parents=True, exist_ok=True)
 
+        rng = random.Random(args.seed)
+        if split == "train" and args.max_por_clase:
+            for n, archivos in archivos_por_clase.items():
+                if len(archivos) > args.max_por_clase:
+                    rng.shuffle(archivos)
+                    for f in archivos[args.max_por_clase:]:
+                        f.unlink()
+                    del archivos[args.max_por_clase:]
         if split == "train" and args.balancear:
-            rng = random.Random(args.seed)
             for n, archivos in archivos_por_clase.items():
                 faltan = args.balancear - len(archivos)
                 for k in range(max(0, faltan)):
@@ -104,7 +114,8 @@ def main():
 
         print(f"\n[{split}] {len(imagenes)} imágenes, {sin_etiqueta} sin etiquetas, {sum(conteo.values())} recortes")
         for n in clases_salida:
-            print(f"  {n:<14} {conteo[n]:>6}")
+            final = len(list((out / split / n).glob("*.jpg")))
+            print(f"  {n:<14} {conteo[n]:>6}" + (f"  -> {final} en disco" if final != conteo[n] else ""))
 
     if args.yaml_detector:
         det = {"names": {0: "grano"}}
