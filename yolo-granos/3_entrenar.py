@@ -36,6 +36,8 @@ def main():
     ap.add_argument("--batch", type=int, default=16, help="-1 = automático según la memoria de la GPU")
     ap.add_argument("--patience", type=int, default=30)
     ap.add_argument("--device", default=None)
+    ap.add_argument("--workers", type=int, default=None,
+                    help="procesos que cargan imágenes (Ultralytics usa 8). En Colab usa 2: con más puede trabarse")
     ap.add_argument("--project", default=None, help="carpeta donde guardar runs (ej. en Google Drive)")
     ap.add_argument("--resume", default=None, metavar="LAST_PT",
                     help="retoma un entrenamiento interrumpido desde su weights/last.pt")
@@ -52,6 +54,8 @@ def main():
         comunes["device"] = args.device
     if args.project:
         comunes["project"] = args.project
+    if args.workers is not None:
+        comunes["workers"] = args.workers
 
     if args.etapa == "completo":
         model = YOLO(args.model or "yolo11s.pt")
