@@ -33,7 +33,10 @@ def main():
     ap.add_argument("--model", default=None)
     ap.add_argument("--imgsz", type=int, default=None)
     ap.add_argument("--epochs", type=int, default=None)
-    ap.add_argument("--batch", type=int, default=16, help="-1 = automático según la memoria de la GPU")
+    ap.add_argument("--batch", type=int, default=None,
+                    help="por defecto 4 en los detectores y 64 en el clasificador. Evita -1 en los detectores: "
+                         "con ~100 granos por imagen el cálculo automático sobreestima el lote y la GPU se queda "
+                         "sin memoria al asignar etiquetas, lo que vuelve el entrenamiento lentísimo")
     ap.add_argument("--patience", type=int, default=30)
     ap.add_argument("--device", default=None)
     ap.add_argument("--workers", type=int, default=None,
@@ -49,7 +52,8 @@ def main():
     if not args.data:
         ap.error("--data es obligatorio (salvo con --resume)")
 
-    comunes = {"data": args.data, "batch": args.batch, "patience": args.patience, **COLOR_SUAVE}
+    batch = args.batch if args.batch is not None else (64 if args.etapa == "clasificador" else 4)
+    comunes = {"data": args.data, "batch": batch, "patience": args.patience, **COLOR_SUAVE}
     if args.device is not None:
         comunes["device"] = args.device
     if args.project:
