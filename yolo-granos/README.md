@@ -35,6 +35,12 @@ python 0_auditar_dataset.py   --data dataset_v2/data.yaml
 python 0b_mosaico_clases.py   --data dataset_v2/data.yaml
 ```
 
+Para unir clases (por ejemplo sanog y sanop en "sano") sin tocar Label Studio:
+
+```bash
+python preparar_export.py --export ruta/export_labelstudio --out dataset_v3 --fusionar sano=sanog,sanop
+```
+
 `preparar_export.py` toma los nombres del `classes.txt` del export (el mismo orden que los índices), reparte
 las imágenes probando cientos de órdenes y elige el reparto más parejo por clase y por número de imágenes,
 valida las etiquetas y nunca escribe sobre un dataset existente. Así no sobreviven `.txt` viejos de un export anterior.

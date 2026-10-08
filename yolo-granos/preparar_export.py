@@ -12,8 +12,13 @@ sin separar train/val/test. Este script:
   4. Copia todo a una carpeta NUEVA (nunca sobre un dataset anterior: así no sobreviven .txt viejos
      ni caches) y escribe data.yaml.
 
+Con --fusionar NUEVA=A,B se unen clases al preparar el dataset (por ejemplo sano=sanog,sanop): los .txt
+se reescriben con los índices nuevos y el data.yaml queda con la lista de clases resultante. Label Studio
+no se toca, así que la distinción original se conserva y se puede deshacer exportando de nuevo sin fusionar.
+
 Uso:
   python preparar_export.py --export ruta/export_labelstudio --out dataset_v2 --val 0.15 --test 0.15
+  python preparar_export.py --export ruta/export_labelstudio --out dataset_v3 --fusionar sano=sanog,sanop
 """
 
 import argparse
@@ -99,6 +104,8 @@ def main():
     ap.add_argument("--val", type=float, default=0.15)
     ap.add_argument("--test", type=float, default=0.15)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--fusionar", action="append", default=[], metavar="NUEVA=A,B",
+                    help="une clases en una sola (se puede repetir), ej. sano=sanog,sanop")
     args = ap.parse_args()
 
     exp, out = Path(args.export), Path(args.out)
@@ -111,6 +118,22 @@ def main():
     print("Clases según classes.txt:")
     for i, n in enumerate(names):
         print(f"  {i:>2}  {n}")
+
+    # índice original -> índice final (con fusiones). La clase fusionada ocupa el lugar de la primera que une.
+    destino = {n: n for n in names}
+    for regla in args.fusionar:
+        nueva, _, origen = regla.partition("=")
+        for n in origen.split(","):
+            if n not in destino:
+                raise SystemExit(f"--fusionar: la clase '{n}' no está en classes.txt")
+            destino[n] = nueva
+    nombres_finales = list(dict.fromkeys(destino[n] for n in names))
+    remap = {i: nombres_finales.index(destino[n]) for i, n in enumerate(names)}
+    if args.fusionar:
+        print("\nClases finales tras fusionar:")
+        for i, n in enumerate(nombres_finales):
+            origen = [o for o in names if destino[o] == n]
+            print(f"  {i:>2}  {n}" + (f"   <- {', '.join(origen)}" if len(origen) > 1 else ""))
 
     imagenes = {p.stem: p for p in (exp / "images").rglob("*") if p.suffix.lower() in IMG_EXTS}
     etiquetas = {p.stem: p for p in (exp / "labels").rglob("*.txt")}
@@ -136,11 +159,12 @@ def main():
                     print(f"!! {etiquetas[stem].name}:{n_linea} línea inválida: {linea!r}")
                     errores += 1
                     continue
-                cs.append(c)
+                cs.append(remap[c])
         clases_de[stem] = Counter(cs)
         total.update(cs)
     if errores:
         raise SystemExit(f"\n{errores} líneas inválidas: corrige el export antes de continuar.")
+    names = nombres_finales
     vacias = [names[i] for i in range(len(names)) if total[i] == 0]
     if vacias:
         print(f"\n!! Clases SIN etiquetas: {vacias}")
@@ -160,7 +184,15 @@ def main():
                 continue
             dst = out / sub / split / src.name
             dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+            if sub == "labels" and args.fusionar:
+                lineas = []
+                for linea in src.read_text(encoding="utf-8").splitlines():
+                    v = linea.split()
+                    if v:
+                        lineas.append(" ".join([str(remap[int(float(v[0]))])] + v[1:]))
+                dst.write_text("\n".join(lineas) + "\n", encoding="utf-8")
+            else:
+                shutil.copy2(src, dst)
 
     data = {"path": str(out.resolve()), "names": dict(enumerate(names))}
     for s in fracs:
