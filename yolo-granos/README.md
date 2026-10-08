@@ -17,6 +17,8 @@ Abre `entrenar_colab.ipynb` en Colab (*Archivo → Abrir cuaderno → GitHub*, r
 - entrena la línea base de una etapa y las dos etapas, guardando los pesos en Drive (`--project`);
 - compara ambos enfoques en el split de test;
 - si Colab se desconecta, retoma con `python 3_entrenar.py <etapa> --resume .../weights/last.pt`.
+- lanza cada entrenamiento en segundo plano con su log en `MiDrive/granos/logs/` y muestra un resumen
+  cada minuto. Así no se congela la salida de la celda, algo que en Colab parece un bloqueo del entrenamiento.
 
 ## Re-exportar desde Label Studio y empezar limpio
 
