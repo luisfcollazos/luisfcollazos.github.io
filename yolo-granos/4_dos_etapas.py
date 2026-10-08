@@ -165,15 +165,15 @@ def evaluar(pipe, args):
         im, crudos = pipe.crudo(img_path)
         W, H = im.size
         gts = [(c, xywhn_a_xyxy(xc, yc, w, h, W, H)) for c, xc, yc, w, h in leer_etiquetas(img_path)]
-        cache.append((crudos, gts))
+        cache.append((img_path, (W, H), crudos, gts))
         if n_img % 50 == 0:
             print(f"  {n_img}/{len(imagenes)} imágenes")
 
-    resumen = []
+    resumen, errores = [], []
     for tau in taus:
         m = np.zeros((nc + 1, nc + 1), dtype=int)
-        for crudos, gts in cache:
-            preds = [(caja, pipe.nombrar(probs, medida, tau)[0]) for caja, probs, medida, _ in crudos]
+        for img_path, tam, crudos, gts in cache:
+            preds = [(caja, *pipe.nombrar(probs, medida, tau)) for caja, probs, medida, _ in crudos]
             # emparejamiento voraz por IoU descendente (como Ultralytics: solo la caja, no la clase)
             pares = sorted(((iou(p[0], g[1]), pi, gi) for pi, p in enumerate(preds) for gi, g in enumerate(gts)),
                            reverse=True)
@@ -186,6 +186,8 @@ def evaluar(pipe, args):
                 usados_p.add(pi)
                 usados_g.add(gi)
                 m[idx[preds[pi][1]], gts[gi][0]] += 1
+                if args.guardar_errores and tau == taus[0] and preds[pi][1] != names[gts[gi][0]]:
+                    errores.append((img_path, tam, gts[gi][1], names[gts[gi][0]], preds[pi][1], preds[pi][2]))
             for pi, p in enumerate(preds):
                 if pi not in usados_p:
                     m[idx[p[1]], nc] += 1  # falso positivo
@@ -202,8 +204,60 @@ def evaluar(pipe, args):
         for tau, global_, macro in resumen:
             print(f"{tau:>6g}{global_:>11.1%}{macro:>25.1%}")
         print("Elige TAU en val (no en test) y luego evalúa test una sola vez con ese valor.")
+    if args.guardar_errores:
+        guardar_errores(errores, Path(args.guardar_errores), args.errores_max, taus[0])
     if pipe.tamano:
         print(f"\nGranos medidos con la caja por no poder aislarlos (pegados/fondo irregular): {pipe.sin_medida}")
+
+
+def guardar_errores(errores, out, maximo, tau):
+    """Recortes de los granos mal clasificados, agrupados por confusión, para revisarlos en Label Studio.
+
+    out/<real>__como__<predicho>/NNN_<imagen>.jpg   recorte con la caja (ordenados por confianza, mayor primero)
+    out/<real>__como__<predicho>/_mosaico.jpg       todos los recortes del par en una sola imagen
+    out/errores.csv                                  imagen y posición en % (como en Label Studio) de cada uno
+    """
+    from collections import defaultdict
+
+    grupos = defaultdict(list)
+    for e in errores:
+        grupos[(e[3], e[4])].append(e)
+    out.mkdir(parents=True, exist_ok=True)
+    filas, lado = [], 160
+    print(f"\n===== Errores guardados en {out} (TAU {tau:g}) =====")
+    for (real, pred), lista in sorted(grupos.items(), key=lambda kv: -len(kv[1])):
+        lista.sort(key=lambda e: -e[5])  # más seguro primero: más probable que la etiqueta esté mal
+        carpeta = out / f"{real}__como__{pred}"
+        carpeta.mkdir(exist_ok=True)
+        celdas = []
+        for k, (img_path, (W, H), b, _, _, conf) in enumerate(lista[:maximo], 1):
+            v = 3 * max(b[2] - b[0], b[3] - b[1])
+            cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+            x0, y0 = cx - v / 2, cy - v / 2
+            with Image.open(img_path) as im:
+                rec = im.convert("RGB").crop((int(x0), int(y0), int(x0 + v), int(y0 + v)))
+            esc = lado / rec.width
+            rec = rec.resize((lado, lado))
+            d = ImageDraw.Draw(rec)
+            d.rectangle(((b[0] - x0) * esc, (b[1] - y0) * esc, (b[2] - x0) * esc, (b[3] - y0) * esc),
+                        outline=(255, 0, 0), width=2)
+            d.rectangle((0, 0, 62, 13), fill=(0, 0, 0))
+            d.text((3, 1), f"{k} ({conf:.0%})", fill=(255, 255, 0))
+            rec.save(carpeta / f"{k:03d}_{img_path.stem}.jpg", quality=92)
+            celdas.append(rec)
+            pos = (f"x={100 * b[0] / W:.1f}% y={100 * b[1] / H:.1f}% "
+                   f"w={100 * (b[2] - b[0]) / W:.1f}% h={100 * (b[3] - b[1]) / H:.1f}%")
+            filas.append([carpeta.name, k, img_path.name, real, pred, round(conf, 3), pos])
+        cols = 8
+        mosaico = Image.new("RGB", (cols * lado, ((len(celdas) + cols - 1) // cols) * lado), (255, 255, 255))
+        for k, c in enumerate(celdas):
+            mosaico.paste(c, ((k % cols) * lado, (k // cols) * lado))
+        mosaico.save(carpeta / "_mosaico.jpg", quality=90)
+        print(f"  {real:>11} como {pred:<11} {len(lista):>4}  (guardados {min(len(lista), maximo)})")
+    with open(out / "errores.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["carpeta", "n", "imagen", "etiqueta", "modelo_dice", "confianza", "posicion_label_studio"])
+        w.writerows(filas)
 
 
 def informe(m, names, out, sufijo=""):
@@ -298,6 +352,9 @@ def main():
     ap.add_argument("--ajuste-prior", default="0", metavar="TAU[,TAU...]",
                     help="corrige el balanceo del clasificador hacia la frecuencia real de las clases (0 = no)")
     ap.add_argument("--cls-data", default=None, help="carpeta de recortes del clasificador (para --ajuste-prior)")
+    ap.add_argument("--guardar-errores", default=None, metavar="CARPETA",
+                    help="(evaluar) guarda recortes de los granos mal clasificados, por confusión (usa el primer TAU)")
+    ap.add_argument("--errores-max", type=int, default=80, help="máximo de recortes por confusión")
     ap.add_argument("--source", help="(predecir) imagen o carpeta")
     ap.add_argument("--guardar-imagenes", action="store_true")
     ap.add_argument("--out", default="resultados_dos_etapas")

@@ -198,5 +198,16 @@ python 4_dos_etapas.py evaluar  --det runs/detect/det_granos/weights/best.pt \
 python 4_dos_etapas.py predecir --det ... --cls ... --source carpeta/ --guardar-imagenes
 ```
 
+### Revisar errores para corregir etiquetas
+
+```bash
+python 4_dos_etapas.py evaluar --det ... --cls ... --data data.yaml --split train --ventana 128 \
+    --cls-data dataset_cls --ajuste-prior 0.5 --guardar-errores errores_train
+```
+
+Guarda un recorte de cada grano mal clasificado en `errores_train/<etiqueta>__como__<predicho>/`, ordenados por
+confianza del modelo (los primeros son los más probables de estar mal etiquetados), con un `_mosaico.jpg` por
+carpeta y `errores.csv` con la imagen y la posición en % para Label Studio. Corrige con train y val, no con test.
+
 Para comparar de forma justa, contrasta la salida de `evaluar` con la fila `normal` del paso 1
 (mismo umbral), no con la matriz original a conf 0.001.
