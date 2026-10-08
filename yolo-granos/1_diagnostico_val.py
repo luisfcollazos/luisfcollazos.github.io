@@ -79,6 +79,8 @@ def main():
                 print(f"\nRecall por clase (diagonal / reales) con conf>={conf_matriz}:")
                 for n, r in sorted(recall_cls.items(), key=lambda x: x[1]):
                     print(f"  {n:<14} {r:6.1%}")
+                validos = [r for r in recall_cls.values() if r == r]  # sin NaN
+                print(f"  {'PROMEDIO':<14} {sum(validos) / len(validos):6.1%}   (cada clase pesa igual)")
         filas[nombre] = fila
 
     print("\n===== Comparación =====")

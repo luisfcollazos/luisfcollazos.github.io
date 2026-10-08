@@ -12,8 +12,16 @@ Separación por tamaño: si el clasificador se entrenó con una clase fusionada 
 --tamano "sano:ancho:23.5:sanog:sanop" mide cada grano clasificado como `sano` y lo asigna a `sanog` si
 su ancho >= 23.5 px, o a `sanop` si no. El umbral y la métrica salen de 0_auditar_dataset.py.
 
+Ajuste por frecuencia de clases (--ajuste-prior): el clasificador se entrena con clases balanceadas
+(--balancear / --max-por-clase), así que "cree" que todas las clases son igual de frecuentes y le quita
+granos a la clase dominante (sanog). Con TAU > 0 se multiplican sus probabilidades por
+(frecuencia real / frecuencia en el entrenamiento)^TAU: TAU=0 no corrige, TAU=1 corrige del todo.
+Se pueden probar varios valores en una pasada (--ajuste-prior 0,0.5,1). Elige TAU en val, no en test.
+
 Uso:
   python 4_dos_etapas.py evaluar  --det det.pt --cls cls.pt --data data.yaml --split val
+  python 4_dos_etapas.py evaluar  --det det.pt --cls cls.pt --data data.yaml --split val \
+      --cls-data dataset_cls --ajuste-prior 0,0.25,0.5,0.75,1
   python 4_dos_etapas.py evaluar  --det det.pt --cls cls.pt --data data.yaml --tamano "sano:ancho:23.5:sanog:sanop"
   python 4_dos_etapas.py predecir --det det.pt --cls cls.pt --source carpeta_imagenes/ --guardar-imagenes
 """
@@ -63,19 +71,35 @@ class DosEtapas:
                 raise SystemExit(f"--tamano: el clasificador no tiene la clase '{tamano['clase']}'")
             self.clases_salida = (self.clases_salida - {tamano["clase"]}) | {tamano["grande"], tamano["pequeno"]}
         self.sin_medida = 0  # granos en los que no se pudo aislar el grano y se usó la caja
+        self.log_ratio = np.zeros(len(self.names))
 
-    def _por_tamano(self, recorte, caja):
-        t = self.tamano
+    def fijar_prior(self, frec_real: dict, frec_entreno: dict):
+        """Guarda log(frec_real / frec_entreno) por índice del clasificador (1 = sin corrección)."""
+        self.log_ratio = np.zeros(len(self.names))
+        for i, n in self.names.items():
+            if frec_real.get(n) and frec_entreno.get(n):
+                self.log_ratio[i] = np.log(frec_real[n] / frec_entreno[n])
+
+    def nombrar(self, probs, medida, tau=0.0):
+        """Clase final a partir de las probabilidades del clasificador (y el tamaño si hay --tamano)."""
+        p = probs * np.exp(tau * self.log_ratio) if tau else probs
+        p = p / p.sum()
+        top = int(p.argmax())
+        nombre = self.names[top]
+        if self.tamano and nombre == self.tamano["clase"]:
+            t = self.tamano
+            nombre = t["grande"] if medida >= t["umbral"] else t["pequeno"]
+        return nombre, float(p[top])
+
+    def _medida(self, recorte, caja):
         m = medir_grano(recorte)
         if m is None or m["pegado"]:
             self.sin_medida += 1
-            valor = medida_caja(caja, t["metrica"])
-        else:
-            valor = m[t["metrica"]]
-        return t["grande"] if valor >= t["umbral"] else t["pequeno"]
+            return medida_caja(caja, self.tamano["metrica"])
+        return m[self.tamano["metrica"]]
 
-    def __call__(self, img_path):
-        """Devuelve [(xyxy, nombre_clase, conf_clase, conf_det)] para una imagen."""
+    def crudo(self, img_path):
+        """Detecta y clasifica: devuelve (imagen, [(xyxy, probs, medida, conf_det)])."""
         im = Image.open(img_path).convert("RGB")
         r = self.det.predict(im, imgsz=self.imgsz_det, conf=self.conf, iou=self.iou_nms,
                              agnostic_nms=True, device=self.device, verbose=False)[0]
@@ -90,11 +114,34 @@ class DosEtapas:
             res = self.cls.predict(recortes[i:i + 64], imgsz=self.imgsz_cls, device=self.device, verbose=False)
             for j, rc in enumerate(res):
                 k = i + j
-                nombre = self.names[int(rc.probs.top1)]
-                if self.tamano and nombre == self.tamano["clase"]:
-                    nombre = self._por_tamano(recortes[k], cajas[k])
-                salida.append((cajas[k].tolist(), nombre, float(rc.probs.top1conf), float(conf_det[k])))
+                medida = self._medida(recortes[k], cajas[k]) if self.tamano else None
+                salida.append((cajas[k].tolist(), rc.probs.data.cpu().numpy().astype(float), medida,
+                               float(conf_det[k])))
         return im, salida
+
+    def __call__(self, img_path, tau=0.0):
+        """Devuelve (imagen, [(xyxy, nombre_clase, conf_clase, conf_det)])."""
+        im, crudos = self.crudo(img_path)
+        salida = []
+        for caja, probs, medida, cd in crudos:
+            nombre, conf = self.nombrar(probs, medida, tau)
+            salida.append((caja, nombre, conf, cd))
+        return im, salida
+
+
+def contar_clases(data, split="train"):
+    """Etiquetas por nombre de clase en un split del data.yaml (frecuencia real)."""
+    from collections import Counter
+    c = Counter()
+    for img in listar_imagenes(data.get(split) or []):
+        c.update(data["names"][e[0]] for e in leer_etiquetas(img))
+    return c
+
+
+def contar_recortes(cls_data):
+    """Recortes por clase en dataset_cls/train (frecuencia con la que se entrenó el clasificador)."""
+    raiz = Path(cls_data) / "train"
+    return {d.name: sum(1 for _ in d.glob("*.jpg")) for d in raiz.iterdir() if d.is_dir()}
 
 
 def evaluar(pipe, args):
@@ -105,49 +152,80 @@ def evaluar(pipe, args):
     if faltan:
         raise SystemExit(f"El clasificador no tiene las clases: {sorted(faltan)}")
     idx = {n: i for i, n in enumerate(names)}
-    m = np.zeros((nc + 1, nc + 1), dtype=int)
+    taus = [float(t) for t in str(args.ajuste_prior).split(",")]
+    if any(taus):
+        if not args.cls_data:
+            raise SystemExit("--ajuste-prior necesita --cls-data (la carpeta de recortes con la que se entrenó)")
+        pipe.fijar_prior(contar_clases(data, "train"), contar_recortes(args.cls_data))
 
+    # detección y clasificación una sola vez; luego se evalúa cada tau
     imagenes = listar_imagenes(data[args.split])
+    cache = []
     for n_img, img_path in enumerate(imagenes, 1):
-        im, preds = pipe(img_path)
+        im, crudos = pipe.crudo(img_path)
         W, H = im.size
         gts = [(c, xywhn_a_xyxy(xc, yc, w, h, W, H)) for c, xc, yc, w, h in leer_etiquetas(img_path)]
-        # emparejamiento voraz por IoU descendente (como Ultralytics: solo la caja, no la clase)
-        pares = sorted(((iou(p[0], g[1]), pi, gi) for pi, p in enumerate(preds) for gi, g in enumerate(gts)),
-                       reverse=True)
-        usados_p, usados_g = set(), set()
-        for v, pi, gi in pares:
-            if v < 0.5:
-                break
-            if pi in usados_p or gi in usados_g:
-                continue
-            usados_p.add(pi)
-            usados_g.add(gi)
-            m[idx[preds[pi][1]], gts[gi][0]] += 1
-        for pi, p in enumerate(preds):
-            if pi not in usados_p:
-                m[idx[p[1]], nc] += 1  # falso positivo
-        for gi, g in enumerate(gts):
-            if gi not in usados_g:
-                m[nc, g[0]] += 1  # no detectado
+        cache.append((crudos, gts))
         if n_img % 50 == 0:
             print(f"  {n_img}/{len(imagenes)} imágenes")
 
+    resumen = []
+    for tau in taus:
+        m = np.zeros((nc + 1, nc + 1), dtype=int)
+        for crudos, gts in cache:
+            preds = [(caja, pipe.nombrar(probs, medida, tau)[0]) for caja, probs, medida, _ in crudos]
+            # emparejamiento voraz por IoU descendente (como Ultralytics: solo la caja, no la clase)
+            pares = sorted(((iou(p[0], g[1]), pi, gi) for pi, p in enumerate(preds) for gi, g in enumerate(gts)),
+                           reverse=True)
+            usados_p, usados_g = set(), set()
+            for v, pi, gi in pares:
+                if v < 0.5:
+                    break
+                if pi in usados_p or gi in usados_g:
+                    continue
+                usados_p.add(pi)
+                usados_g.add(gi)
+                m[idx[preds[pi][1]], gts[gi][0]] += 1
+            for pi, p in enumerate(preds):
+                if pi not in usados_p:
+                    m[idx[p[1]], nc] += 1  # falso positivo
+            for gi, g in enumerate(gts):
+                if gi not in usados_g:
+                    m[nc, g[0]] += 1  # no detectado
+        sufijo = f"_tau{tau:g}" if len(taus) > 1 else ""
+        print(f"\n========== ajuste-prior TAU = {tau:g} ==========" if len(taus) > 1 else "")
+        resumen.append((tau, *informe(m, names, Path(args.out), sufijo)))
+
+    if len(taus) > 1:
+        print("\n===== Resumen por TAU =====")
+        print(f"{'TAU':>6}{'aciertos':>11}{'recall medio por clase':>25}")
+        for tau, global_, macro in resumen:
+            print(f"{tau:>6g}{global_:>11.1%}{macro:>25.1%}")
+        print("Elige TAU en val (no en test) y luego evalúa test una sola vez con ese valor.")
+    if pipe.tamano:
+        print(f"\nGranos medidos con la caja por no poder aislarlos (pegados/fondo irregular): {pipe.sin_medida}")
+
+
+def informe(m, names, out, sufijo=""):
+    nc = len(names)
     reales = m[:, :nc].sum(0)
     pred = m[:nc, :].sum(1)
     diag = m.diagonal()[:nc]
-    print(f"\nGranos reales: {reales.sum()}  |  clase correcta: {diag.sum()} ({diag.sum() / max(reales.sum(), 1):.1%})"
+    recalls = [diag[i] / reales[i] for i in range(nc) if reales[i]]
+    global_ = diag.sum() / max(reales.sum(), 1)
+    macro = float(np.mean(recalls)) if recalls else float("nan")
+    print(f"\nGranos reales: {reales.sum()}  |  clase correcta: {diag.sum()} ({global_:.1%})"
           f"  |  no detectados: {m[nc, :nc].sum()}  |  sobrantes (FP): {m[:nc, nc].sum()}")
+    print(f"Recall promedio por clase (cada clase pesa igual): {macro:.1%}")
     print(f"\n{'clase':<14}{'reales':>8}{'recall':>9}{'precisión':>11}")
     for i, n in enumerate(names):
         rec = diag[i] / reales[i] if reales[i] else float("nan")
         prec = diag[i] / pred[i] if pred[i] else float("nan")
         print(f"{n:<14}{reales[i]:>8}{rec:>9.1%}{prec:>11.1%}")
 
-    out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     etiquetas = names + ["background"]
-    with open(out / "matriz_confusion.csv", "w", newline="", encoding="utf-8") as f:
+    with open(out / f"matriz_confusion{sufijo}.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["pred \\ real"] + etiquetas)
         for i, fila in enumerate(m):
@@ -167,14 +245,14 @@ def evaluar(pipe, args):
         ax.set_yticks(range(nc + 1), etiquetas)
         ax.set_xlabel("Real")
         ax.set_ylabel("Predicho")
-        ax.set_title("Matriz de confusión — dos etapas")
+        ax.set_title(f"Matriz de confusión — dos etapas{sufijo.replace('_', ' ')}")
         fig.tight_layout()
-        fig.savefig(out / "matriz_confusion.png", dpi=150)
+        fig.savefig(out / f"matriz_confusion{sufijo}.png", dpi=150)
+        plt.close(fig)
     except ImportError:
         pass
-    if pipe.tamano:
-        print(f"\nGranos medidos con la caja por no poder aislarlos (pegados/fondo irregular): {pipe.sin_medida}")
-    print(f"\nMatriz guardada en {out}/matriz_confusion.csv (y .png)")
+    print(f"\nMatriz guardada en {out}/matriz_confusion{sufijo}.csv (y .png)")
+    return global_, macro
 
 
 def predecir(pipe, args):
@@ -186,7 +264,7 @@ def predecir(pipe, args):
         w = csv.writer(f)
         w.writerow(["imagen", "x1", "y1", "x2", "y2", "clase", "conf_clase", "conf_det"])
         for img_path in imagenes:
-            im, preds = pipe(img_path)
+            im, preds = pipe(img_path, tau=float(str(args.ajuste_prior).split(",")[0]))
             for caja, nombre, cc, cd in preds:
                 w.writerow([img_path.name, *(round(v, 1) for v in caja), nombre, round(cc, 4), round(cd, 4)])
             if args.guardar_imagenes:
@@ -217,6 +295,9 @@ def main():
     ap.add_argument("--data", help="(evaluar) data.yaml original con las 14 clases")
     ap.add_argument("--root", default=None)
     ap.add_argument("--split", default="val")
+    ap.add_argument("--ajuste-prior", default="0", metavar="TAU[,TAU...]",
+                    help="corrige el balanceo del clasificador hacia la frecuencia real de las clases (0 = no)")
+    ap.add_argument("--cls-data", default=None, help="carpeta de recortes del clasificador (para --ajuste-prior)")
     ap.add_argument("--source", help="(predecir) imagen o carpeta")
     ap.add_argument("--guardar-imagenes", action="store_true")
     ap.add_argument("--out", default="resultados_dos_etapas")
@@ -232,6 +313,11 @@ def main():
     else:
         if not args.source:
             ap.error("predecir requiere --source")
+        if float(str(args.ajuste_prior).split(",")[0]):
+            if not (args.data and args.cls_data):
+                ap.error("--ajuste-prior en predecir necesita --data (frecuencia real) y --cls-data")
+            pipe.fijar_prior(contar_clases(cargar_data_yaml(args.data, args.root), "train"),
+                             contar_recortes(args.cls_data))
         predecir(pipe, args)
 
 
