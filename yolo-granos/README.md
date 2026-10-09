@@ -215,5 +215,14 @@ Guarda un recorte de cada grano mal clasificado en `errores_train/<etiqueta>__co
 confianza del modelo (los primeros son los más probables de estar mal etiquetados), con un `_mosaico.jpg` por
 carpeta y `errores.csv` con la imagen y la posición en % para Label Studio. Corrige con train y val, no con test.
 
+Para ubicar esos granos en la imagen completa:
+
+```bash
+python marcar_errores.py --errores errores_train/errores.csv --data dataset_v2/data.yaml --out marcadas_train
+```
+
+Guarda una copia de cada imagen con los granos a revisar recuadrados y numerados ("3 sanog>vinagre"), en el mismo
+orden que la hoja de revisión (de arriba hacia abajo, de izquierda a derecha), y un `indice.csv` con la zona de cada uno.
+
 Para comparar de forma justa, contrasta la salida de `evaluar` con la fila `normal` del paso 1
 (mismo umbral), no con la matriz original a conf 0.001.
