@@ -16,13 +16,20 @@ Con --fusionar NUEVA=A,B se unen clases al preparar el dataset (por ejemplo sano
 se reescriben con los índices nuevos y el data.yaml queda con la lista de clases resultante. Label Studio
 no se toca, así que la distinción original se conserva y se puede deshacer exportando de nuevo sin fusionar.
 
+Con --mismo-split DATASET_ANTERIOR cada imagen va al mismo split (train/val/test) que tenía en ese dataset.
+Úsalo al re-exportar tras corregir etiquetas: así test sigue siendo el mismo conjunto de imágenes (los
+resultados son comparables y no entran en test imágenes corregidas mirando los errores del modelo).
+Las imágenes nuevas, que no estaban antes, se reparten de forma estratificada.
+
 Uso:
   python preparar_export.py --export ruta/export_labelstudio --out dataset_v2 --val 0.15 --test 0.15
   python preparar_export.py --export ruta/export_labelstudio --out dataset_v3 --fusionar sano=sanog,sanop
+  python preparar_export.py --export ruta/export_nuevo --out dataset_v3 --fusionar sano=sanog,sanop --mismo-split dataset_v2
 """
 
 import argparse
 import random
+import re
 import shutil
 from collections import Counter
 from pathlib import Path
@@ -104,6 +111,8 @@ def main():
     ap.add_argument("--val", type=float, default=0.15)
     ap.add_argument("--test", type=float, default=0.15)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--mismo-split", default=None, metavar="DATASET_ANTERIOR",
+                    help="conserva el split de cada imagen tal como estaba en ese dataset")
     ap.add_argument("--fusionar", action="append", default=[], metavar="NUEVA=A,B",
                     help="une clases en una sola (se puede repetir), ej. sano=sanog,sanop")
     args = ap.parse_args()
@@ -171,7 +180,28 @@ def main():
 
     # --- reparto estratificado ---
     fracs = {"train": 1 - args.val - args.test, "val": args.val, "test": args.test}
-    split_de = repartir(clases_de, fracs, args.seed)
+    if args.mismo_split:
+        previo = {}
+        for s_ in fracs:
+            for f in (Path(args.mismo_split) / "images" / s_).glob("*"):
+                if f.suffix.lower() in IMG_EXTS:
+                    previo[f.stem] = s_
+                    previo.setdefault(re.sub(r"^[0-9a-f]{8}-", "", f.stem), s_)  # sin el prefijo de Label Studio
+        split_de, nuevas = {}, {}
+        for stem, cs in clases_de.items():
+            s_ = previo.get(stem) or previo.get(re.sub(r"^[0-9a-f]{8}-", "", stem))
+            if s_:
+                split_de[stem] = s_
+            else:
+                nuevas[stem] = cs
+        if not split_de:
+            raise SystemExit(f"Ninguna imagen coincide con {args.mismo_split}/images/*: ¿es la carpeta correcta?")
+        if nuevas:
+            split_de.update(repartir(nuevas, fracs, args.seed))
+        print(f"\nMismo split que {args.mismo_split}: {len(clases_de) - len(nuevas)} imágenes conservan su split, "
+              f"{len(nuevas)} nuevas repartidas")
+    else:
+        split_de = repartir(clases_de, fracs, args.seed)
     print(f"\nPeor desviación de una clase respecto a su proporción: {desviacion(clases_de, split_de, fracs):.0%}")
     asignado = {s: Counter() for s in fracs}
     n_img = Counter(split_de.values())

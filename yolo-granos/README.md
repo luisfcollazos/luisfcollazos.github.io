@@ -45,6 +45,14 @@ python preparar_export.py --export ruta/export_labelstudio --out dataset_v3 --fu
 las imágenes probando cientos de órdenes y elige el reparto más parejo por clase y por número de imágenes,
 valida las etiquetas y nunca escribe sobre un dataset existente. Así no sobreviven `.txt` viejos de un export anterior.
 
+Si re-exportas tras **corregir etiquetas**, conserva el reparto anterior con `--mismo-split`: cada imagen
+vuelve al mismo train/val/test, así test sigue siendo el mismo conjunto y los resultados se pueden comparar
+(las imágenes nuevas se reparten de forma estratificada):
+
+```bash
+python preparar_export.py --export ruta/export_nuevo --out dataset_v3 --fusionar sano=sanog,sanop --mismo-split dataset_v2
+```
+
 ## 0. Antes de nada: revisa el umbral de la matriz de confusión
 
 En Ultralytics 8.4+, la `confusion_matrix.png` que genera el entrenamiento se calcula con **conf = 0.001**,
