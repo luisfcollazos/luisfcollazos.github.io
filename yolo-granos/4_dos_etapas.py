@@ -100,7 +100,7 @@ class DosEtapas:
 
     def crudo(self, img_path):
         """Detecta y clasifica: devuelve (imagen, [(xyxy, probs, medida, conf_det)])."""
-        im = Image.open(img_path).convert("RGB")
+        im = (img_path if isinstance(img_path, Image.Image) else Image.open(img_path)).convert("RGB")
         r = self.det.predict(im, imgsz=self.imgsz_det, conf=self.conf, iou=self.iou_nms,
                              agnostic_nms=True, device=self.device, verbose=False)[0]
         cajas = r.boxes.xyxy.cpu().numpy() if len(r.boxes) else np.zeros((0, 4))

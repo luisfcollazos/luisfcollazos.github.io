@@ -53,6 +53,29 @@ vuelve al mismo train/val/test, así test sigue siendo el mismo conjunto y los r
 python preparar_export.py --export ruta/export_nuevo --out dataset_v3 --fusionar sano=sanog,sanop --mismo-split dataset_v2
 ```
 
+## Etiquetar imágenes nuevas con ayuda del modelo
+
+1. Sube las imágenes nuevas al **mismo proyecto** de Label Studio (Import).
+2. Pre-etiquétalas con el modelo de dos etapas (en tu PC, con Label Studio abierto; no hace falta GPU).
+   El token está en Label Studio -> Account & Settings; el número de proyecto, en la dirección `.../projects/N/`:
+
+   ```bash
+   python preetiquetar_ls.py --url http://localhost:8080 --token TU_TOKEN --proyecto N \
+       --det det_best.pt --cls cls_best.pt --ventana 128 --tamano "sano:ancho:UMBRAL:sanog:sanop"
+   ```
+
+   Solo toca las tareas sin etiquetar. Las propuestas entran como *predicciones*: no cuentan hasta que
+   las corriges y pulsas **Submit**, y el export solo incluye tareas enviadas. `preetiquetas.csv` dice
+   cuántos granos de cada clase propuso el modelo por imagen: empieza por las que tienen clases raras.
+3. Exporta y prepara conservando el reparto anterior; las imágenes nuevas se reparten estratificadas:
+
+   ```bash
+   python preparar_export.py --export export_nuevo --out dataset_v6 --fusionar sano=sanog,sanop --mismo-split dataset_v5
+   ```
+
+   Las imágenes sin etiquetas se omiten (con aviso), para que una tarea a medio hacer no entre como
+   imagen sin granos.
+
 ## 0. Antes de nada: revisa el umbral de la matriz de confusión
 
 En Ultralytics 8.4+, la `confusion_matrix.png` que genera el entrenamiento se calcula con **conf = 0.001**,

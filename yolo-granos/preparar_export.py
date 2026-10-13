@@ -113,6 +113,9 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--mismo-split", default=None, metavar="DATASET_ANTERIOR",
                     help="conserva el split de cada imagen tal como estaba en ese dataset")
+    ap.add_argument("--incluir-vacias", action="store_true",
+                    help="conserva las imágenes sin etiquetas como fondo (por defecto se omiten: en este proyecto "
+                         "una imagen sin granos casi siempre es una tarea aún sin etiquetar)")
     ap.add_argument("--fusionar", action="append", default=[], metavar="NUEVA=A,B",
                     help="une clases en una sola (se puede repetir), ej. sano=sanog,sanop")
     args = ap.parse_args()
@@ -148,7 +151,14 @@ def main():
     etiquetas = {p.stem: p for p in (exp / "labels").rglob("*.txt")}
     sin_txt = sorted(set(imagenes) - set(etiquetas))
     sin_img = sorted(set(etiquetas) - set(imagenes))
-    if sin_txt:
+    vacias_txt = [st for st in imagenes if st in etiquetas and not etiquetas[st].read_text(encoding="utf-8").strip()]
+    if (sin_txt or vacias_txt) and not args.incluir_vacias:
+        omitir = sorted(sin_txt + vacias_txt)
+        print(f"\n!! {len(omitir)} imágenes sin etiquetas se OMITEN (¿tareas aún sin etiquetar?): {omitir[:5]}"
+              "\n   Etiquétalas y exporta de nuevo, o usa --incluir-vacias si de verdad no tienen granos.")
+        for st in omitir:
+            del imagenes[st]
+    elif sin_txt:
         print(f"\n!! {len(sin_txt)} imágenes sin .txt (quedarán como imágenes sin granos): {sin_txt[:5]}")
     if sin_img:
         print(f"!! {len(sin_img)} .txt sin imagen (se ignoran): {sin_img[:5]}")
