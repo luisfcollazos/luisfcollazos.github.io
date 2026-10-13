@@ -25,6 +25,8 @@ import argparse
 
 from ultralytics import YOLO
 
+from comun import cargar_data_yaml
+
 
 def resumen_matriz(cm, names):
     """Filas = predicción, columnas = real; la última fila/columna es background."""
@@ -56,6 +58,17 @@ def main():
 
     model = YOLO(args.model)
     names = list(model.names.values())
+    nombres_data = cargar_data_yaml(args.data)["names"]
+    if names != nombres_data:
+        # Ultralytics no lo comprueba: compara índices y muestra los nombres del modelo, así que un modelo
+        # entrenado con otras clases (p. ej. antes de fusionar sanog/sanop) da resultados sin sentido
+        print("!! El modelo y el data.yaml no tienen las mismas clases:")
+        for i in range(max(len(names), len(nombres_data))):
+            m = names[i] if i < len(names) else "-"
+            d = nombres_data[i] if i < len(nombres_data) else "-"
+            print(f"  {i:>2}  modelo={m:<14} data.yaml={d:<14}" + ("" if m == d else "  <-- distinto"))
+        raise SystemExit("¿Es el modelo del último entrenamiento? Revisa la ruta de --model "
+                         "(los entrenamientos nuevos se guardan como completo_granos-2, -3...).")
     configs = {
         "normal@0.001": ({}, 0.001),
         "normal": ({}, args.conf_matriz),
