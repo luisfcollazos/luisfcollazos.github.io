@@ -19,7 +19,8 @@ no se toca, así que la distinción original se conserva y se puede deshacer exp
 Con --mismo-split DATASET_ANTERIOR cada imagen va al mismo split (train/val/test) que tenía en ese dataset.
 Úsalo al re-exportar tras corregir etiquetas: así test sigue siendo el mismo conjunto de imágenes (los
 resultados son comparables y no entran en test imágenes corregidas mirando los errores del modelo).
-Las imágenes nuevas, que no estaban antes, se reparten de forma estratificada.
+Las imágenes nuevas, que no estaban antes, se reparten de forma estratificada; con --nuevas-a train van
+todas a train, así val y test quedan idénticos y el resultado se compara directamente con el anterior.
 
 Uso:
   python preparar_export.py --export ruta/export_labelstudio --out dataset_v2 --val 0.15 --test 0.15
@@ -113,6 +114,8 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--mismo-split", default=None, metavar="DATASET_ANTERIOR",
                     help="conserva el split de cada imagen tal como estaba en ese dataset")
+    ap.add_argument("--nuevas-a", choices=["repartir", "train"], default="repartir",
+                    help="con --mismo-split: a dónde van las imágenes que no estaban en el dataset anterior")
     ap.add_argument("--incluir-vacias", action="store_true",
                     help="conserva las imágenes sin etiquetas como fondo (por defecto se omiten: en este proyecto "
                          "una imagen sin granos casi siempre es una tarea aún sin etiquetar)")
@@ -184,6 +187,15 @@ def main():
     if errores:
         raise SystemExit(f"\n{errores} líneas inválidas: corrige el export antes de continuar.")
     names = nombres_finales
+    n_cajas = sorted(sum(cs.values()) for cs in clases_de.values())
+    mediana = n_cajas[len(n_cajas) // 2] if n_cajas else 0
+    pocas = sorted((sum(cs.values()), st) for st, cs in clases_de.items() if sum(cs.values()) < 0.5 * mediana)
+    if pocas:
+        print(f"\n!! {len(pocas)} imágenes con menos de la mitad de granos etiquetados que la mediana ({mediana}):")
+        for n, st in pocas[:15]:
+            print(f"     {n:>4}  {st}")
+        print("   Si en la foto hay más granos, falta etiquetarlos: un grano sin caja le enseña al detector a "
+              "ignorarlo.\n   Etiqueta TODOS los granos de la imagen, también los sanos.")
     vacias = [names[i] for i in range(len(names)) if total[i] == 0]
     if vacias:
         print(f"\n!! Clases SIN etiquetas: {vacias}")
@@ -206,10 +218,12 @@ def main():
                 nuevas[stem] = cs
         if not split_de:
             raise SystemExit(f"Ninguna imagen coincide con {args.mismo_split}/images/*: ¿es la carpeta correcta?")
-        if nuevas:
+        if nuevas and args.nuevas_a == "train":
+            split_de.update({st: "train" for st in nuevas})
+        elif nuevas:
             split_de.update(repartir(nuevas, fracs, args.seed))
         print(f"\nMismo split que {args.mismo_split}: {len(clases_de) - len(nuevas)} imágenes conservan su split, "
-              f"{len(nuevas)} nuevas repartidas")
+              f"{len(nuevas)} nuevas " + ("a train" if args.nuevas_a == "train" else "repartidas"))
     else:
         split_de = repartir(clases_de, fracs, args.seed)
     print(f"\nPeor desviación de una clase respecto a su proporción: {desviacion(clases_de, split_de, fracs):.0%}")
