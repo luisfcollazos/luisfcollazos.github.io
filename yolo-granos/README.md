@@ -53,6 +53,19 @@ vuelve al mismo train/val/test, así test sigue siendo el mismo conjunto y los r
 python preparar_export.py --export ruta/export_nuevo --out dataset_v3 --fusionar sano=sanog,sanop --mismo-split dataset_v2
 ```
 
+## Revisar el criterio de una clase
+
+Para revisar TODOS los granos de una clase (no una muestra), a la misma escala y ordenados por tamaño,
+marcando los que vienen de imágenes nuevas:
+
+```bash
+python revisar_clase.py --data YoloDataset6/data.yaml --clases Oreado,malla --anterior YoloDataset5
+python marcar_errores.py --errores revision_clases/Oreado.csv --data YoloDataset6/data.yaml --out revision_clases/Oreado_imagenes
+```
+
+El segundo comando dibuja esos granos sobre las imágenes completas con su número del mosaico ("#12"),
+para encontrarlos en Label Studio.
+
 ## Etiquetar imágenes nuevas con ayuda del modelo
 
 1. Sube las imágenes nuevas al **mismo proyecto** de Label Studio (Import).
