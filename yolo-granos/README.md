@@ -168,6 +168,28 @@ python 4_dos_etapas.py evaluar --det ... --cls ... --data data.yaml --tamano "sa
 cómo clasifica una malla o tamiz. Los granos que no se pueden aislar porque están pegados se miden con la caja,
 de forma aproximada, y se informa cuántos fueron.
 
+## malla, Oscuro y Oreado: usar lo que se sabe de cada clase
+
+**malla = grano sano muy pequeño.** Es una regla de tamaño, igual que sanog/sanop. Primero mide si las
+etiquetas la cumplen:
+
+```bash
+python 0_auditar_dataset.py --data YoloDataset7/data.yaml --grande sano --pequeno malla
+```
+
+Si algún umbral acierta más del 90-95 %, el tamaño se puede MEDIR en vez de aprender: el clasificador
+aprende solo "sano" y cada sano por debajo del umbral pasa a malla.
+
+```bash
+python 2_recortar_granos.py ... --fusionar sano=sano,malla
+python 4_dos_etapas.py evaluar ... --tamano "sano:ancho:UMBRAL:sano:malla"
+```
+
+**Oscuro y Oreado = grados de humedad**, que se ven como tono más o menos oscuro. Si la iluminación varía
+entre fotos, el modelo confunde luz con humedad. `0d_iluminacion.py` mide el color del fondo y de los
+granos sanos en cada foto; si es estable, baja el aumento de brillo del clasificador con
+`3_entrenar.py clasificador --hsv-v 0.05`.
+
 ## Clases con pocas imágenes (vinagre, broca)
 
 - **En el pipeline de dos etapas el detector no se ve afectado**: para él todo es "grano". El desbalance

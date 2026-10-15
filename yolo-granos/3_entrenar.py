@@ -38,6 +38,10 @@ def main():
                          "con ~100 granos por imagen el cálculo automático sobreestima el lote y la GPU se queda "
                          "sin memoria al asignar etiquetas, lo que vuelve el entrenamiento lentísimo")
     ap.add_argument("--patience", type=int, default=30)
+    ap.add_argument("--hsv-v", type=float, default=COLOR_SUAVE["hsv_v"],
+                    help="variación aleatoria de brillo. Bájala (ej. 0.05) si la iluminación es estable: el tono "
+                         "oscuro es lo que separa Oscuro de Oreado (ver 0d_iluminacion.py)")
+    ap.add_argument("--hsv-s", type=float, default=COLOR_SUAVE["hsv_s"], help="variación aleatoria de saturación")
     ap.add_argument("--device", default=None)
     ap.add_argument("--workers", type=int, default=None,
                     help="procesos que cargan imágenes (Ultralytics usa 8). En Colab usa 2: con más puede trabarse")
@@ -53,7 +57,8 @@ def main():
         ap.error("--data es obligatorio (salvo con --resume)")
 
     batch = args.batch if args.batch is not None else (64 if args.etapa == "clasificador" else 4)
-    comunes = {"data": args.data, "batch": batch, "patience": args.patience, **COLOR_SUAVE}
+    comunes = {"data": args.data, "batch": batch, "patience": args.patience,
+               **COLOR_SUAVE, "hsv_v": args.hsv_v, "hsv_s": args.hsv_s}
     if args.device is not None:
         comunes["device"] = args.device
     if args.project:
