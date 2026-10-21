@@ -190,6 +190,11 @@ entre fotos, el modelo confunde luz con humedad. `0d_iluminacion.py` mide el col
 granos sanos en cada foto; si es estable, baja el aumento de brillo del clasificador con
 `3_entrenar.py clasificador --hsv-v 0.05`.
 
+Si la iluminación varía (en este dataset el fondo varía ~11 % entre sesiones), corrígela en vez de
+dejar que el modelo la tolere: `--normalizar-fondo` lleva el fondo de cada foto al mismo blanco antes de
+recortar. Se usa igual en `2_recortar_granos.py`, `4_dos_etapas.py` y `preetiquetar_ls.py`; los recortes
+guardan `preproceso.json` y `4_dos_etapas.py` se detiene si las opciones no coinciden.
+
 ## Clases con pocas imágenes (vinagre, broca)
 
 - **En el pipeline de dos etapas el detector no se ve afectado**: para él todo es "grano". El desbalance

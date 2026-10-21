@@ -10,7 +10,7 @@ Pasos:
   3. Ejecuta este script (en tu PC, con Label Studio abierto; no necesita GPU):
 
      python preetiquetar_ls.py --url http://localhost:8080 --token TU_TOKEN --proyecto 1 \\
-         --det det_best.pt --cls cls_best.pt --ventana 128 --tamano "sano:ancho:UMBRAL:sanog:sanop"
+         --det det_best.pt --cls cls_best.pt --ventana 160 --normalizar-fondo --tamano "sano:ancho:UMBRAL:sanog:sanop"
 
      El número de proyecto es el de la dirección del navegador: .../projects/1/data
   4. En Label Studio abre cada tarea, corrige las cajas y clases, y pulsa Submit.
@@ -125,7 +125,8 @@ def main():
     ap.add_argument("--det", required=True)
     ap.add_argument("--cls", required=True)
     ap.add_argument("--imgsz-det", type=int, default=1280)
-    ap.add_argument("--ventana", type=int, default=128, help="la misma que en 2_recortar_granos.py")
+    ap.add_argument("--ventana", type=int, default=160, help="la misma que en 2_recortar_granos.py")
+    ap.add_argument("--normalizar-fondo", action="store_true", help="si se usó en 2_recortar_granos.py")
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--tamano", default=None, metavar="CLASE:METRICA:UMBRAL:GRANDE:PEQUENO")
     ap.add_argument("--renombrar", action="append", default=[], metavar="MODELO=LABEL_STUDIO",
@@ -146,7 +147,7 @@ def main():
     cfg = leer_config(ls.pedir("GET", f"/api/projects/{args.proyecto}/").json()["label_config"])
 
     pipe = dos_etapas.DosEtapas(args.det, args.cls, args.imgsz_det, conf=args.conf, device=args.device,
-                                ventana=args.ventana,
+                                ventana=args.ventana, normalizar=args.normalizar_fondo,
                                 tamano=dos_etapas.parsear_tamano(args.tamano) if args.tamano else None)
     if args.ajuste_prior:
         if not (args.data and args.cls_data):

@@ -15,6 +15,12 @@ Con --ventana 128 cada recorte es un cuadrado fijo de 128 px centrado en el gran
 grano: un grano grande ocupa más del recorte que uno pequeño, así el clasificador puede usar el tamaño
 (sanog/sanop, malla). Usa el mismo valor en 4_dos_etapas.py.
 
+Con --normalizar-fondo cada foto se corrige con su fondo como referencia de blanco antes de recortar
+(ver 0d_iluminacion.py). Úsalo también en 4_dos_etapas.py y preetiquetar_ls.py.
+
+En la carpeta de salida se guarda preproceso.json (ventana, margen, normalización): 4_dos_etapas.py lo
+compara con sus opciones y se detiene si no coinciden.
+
 Con --fusionar se pueden unir clases que solo se distinguen por tamaño (ej. sanog/sanop): al
 reescalar cada recorte a 224 px el clasificador pierde el tamaño real, así que es mejor clasificar
 "sano" y decidir grande/pequeño midiendo el grano (ver 0_auditar_dataset.py y 4_dos_etapas.py).
@@ -26,6 +32,7 @@ Uso:
 """
 
 import argparse
+import json
 import random
 import shutil
 from collections import Counter, defaultdict
@@ -34,7 +41,7 @@ from pathlib import Path
 import yaml
 from PIL import Image
 
-from comun import cargar_data_yaml, leer_etiquetas, listar_imagenes, recortar, xywhn_a_xyxy
+from comun import cargar_data_yaml, leer_etiquetas, listar_imagenes, normalizar_fondo, recortar, xywhn_a_xyxy
 
 
 def main():
@@ -53,6 +60,8 @@ def main():
                     help="en train, deja como máximo N recortes por clase (submuestrea la clase dominante)")
     ap.add_argument("--fusionar", action="append", default=[], metavar="NUEVA=A,B",
                     help="une clases en una sola carpeta; se puede repetir")
+    ap.add_argument("--normalizar-fondo", action="store_true",
+                    help="corrige la iluminación de cada foto con el fondo como referencia (ver 0d_iluminacion.py)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -83,7 +92,7 @@ def main():
                 sin_etiqueta += 1
                 continue
             with Image.open(img_path) as im:
-                im = im.convert("RGB")
+                im = normalizar_fondo(im) if args.normalizar_fondo else im.convert("RGB")
                 W, H = im.size
                 for i, (cls, xc, yc, w, h) in enumerate(etiquetas):
                     if cls >= len(names):
@@ -122,6 +131,9 @@ def main():
         for n in clases_salida:
             final = len(list((out / split / n).glob("*.jpg")))
             print(f"  {n:<14} {conteo[n]:>6}" + (f"  -> {final} en disco" if final != conteo[n] else ""))
+
+    with open(out / "preproceso.json", "w", encoding="utf-8") as f:
+        json.dump({"ventana": args.ventana, "margen": args.margen, "normalizar_fondo": args.normalizar_fondo}, f)
 
     if args.yaml_detector:
         det = {"names": {0: "grano"}}

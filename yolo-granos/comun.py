@@ -104,6 +104,20 @@ def recortar(img: Image.Image, caja_xyxy, margen: float = 0.15, cuadrado: bool =
     return img.crop(caja)
 
 
+def normalizar_fondo(img: Image.Image, ref: float = 240.0) -> Image.Image:
+    """Corrige la iluminación de la foto usando el fondo como referencia de blanco.
+
+    El fondo ocupa la mayor parte de la imagen, así que la mediana de cada canal es su color. Se escala
+    cada canal para llevar ese color a `ref`: una foto más oscura o más amarilla queda como las demás y
+    el tono de los granos (que distingue Oscuro de Oreado) deja de depender de la luz de cada sesión.
+    """
+    import numpy as np
+
+    a = np.asarray(img.convert("RGB"), dtype=np.float32)
+    fondo = np.median(a[::8, ::8].reshape(-1, 3), axis=0)
+    return Image.fromarray(np.clip(a * (ref / np.maximum(fondo, 1.0)), 0, 255).astype(np.uint8))
+
+
 def iou(a, b) -> float:
     ix1, iy1, ix2, iy2 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
     inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)

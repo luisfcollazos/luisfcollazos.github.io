@@ -28,14 +28,15 @@ Uso:
 
 import argparse
 import csv
+import json
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw
 from ultralytics import YOLO
 
-from comun import (IMG_EXTS, cargar_data_yaml, iou, leer_etiquetas, listar_imagenes, medir_grano, recortar,
-                   xywhn_a_xyxy)
+from comun import (IMG_EXTS, cargar_data_yaml, iou, leer_etiquetas, listar_imagenes, medir_grano,
+                   normalizar_fondo, recortar, xywhn_a_xyxy)
 
 METRICAS = ("ancho", "largo", "area")
 
@@ -58,11 +59,12 @@ def medida_caja(caja, metrica):
 
 class DosEtapas:
     def __init__(self, det, cls, imgsz_det=1024, imgsz_cls=224, conf=0.25, iou_nms=0.5, margen=0.15, device=None,
-                 tamano=None, ventana=0):
+                 tamano=None, ventana=0, normalizar=False):
         self.det, self.cls = YOLO(det), YOLO(cls)
         self.imgsz_det, self.imgsz_cls = imgsz_det, imgsz_cls
         self.conf, self.iou_nms, self.margen, self.device = conf, iou_nms, margen, device
         self.ventana = ventana
+        self.normalizar = normalizar
         self.names = self.cls.names  # {i: nombre}
         self.tamano = tamano
         self.clases_salida = set(self.names.values())
@@ -107,7 +109,8 @@ class DosEtapas:
         conf_det = r.boxes.conf.cpu().numpy() if len(r.boxes) else np.zeros(0)
         if not len(cajas):
             return im, []
-        recortes = [recortar(im, c, self.margen, ventana=self.ventana) for c in cajas]
+        im_cls = normalizar_fondo(im) if self.normalizar else im  # el detector usa la foto original
+        recortes = [recortar(im_cls, c, self.margen, ventana=self.ventana) for c in cajas]
         salida = []
         # en lotes para no saturar memoria con imágenes de muchos granos
         for i in range(0, len(recortes), 64):
@@ -331,6 +334,20 @@ def predecir(pipe, args):
     print(f"\nResultados en {out}/predicciones.csv")
 
 
+def comprobar_preproceso(args):
+    """Los recortes de inferencia deben hacerse igual que los de entrenamiento (preproceso.json de --cls-data)."""
+    f = Path(args.cls_data or "") / "preproceso.json"
+    if not args.cls_data or not f.is_file():
+        return
+    entreno = json.loads(f.read_text(encoding="utf-8"))
+    ahora = {"ventana": args.ventana, "margen": args.margen, "normalizar_fondo": args.normalizar_fondo}
+    distintos = {k: (v, ahora[k]) for k, v in entreno.items() if k in ahora and ahora[k] != v}
+    if distintos:
+        raise SystemExit("Los recortes no se hacen igual que al entrenar el clasificador:\n" + "\n".join(
+            f"  {k}: entrenamiento={a}  ahora={b}" for k, (a, b) in distintos.items()) +
+            "\nUsa las mismas opciones que en 2_recortar_granos.py.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("modo", choices=["evaluar", "predecir"])
@@ -345,6 +362,8 @@ def main():
                     help="separa una clase fusionada por tamaño medido, ej. sano:ancho:23.5:sanog:sanop")
     ap.add_argument("--margen", type=float, default=0.15, help="debe coincidir con el usado en 2_recortar_granos.py")
     ap.add_argument("--ventana", type=int, default=0, help="debe coincidir con el usado en 2_recortar_granos.py")
+    ap.add_argument("--normalizar-fondo", action="store_true",
+                    help="debe coincidir con el usado en 2_recortar_granos.py")
     ap.add_argument("--device", default=None)
     ap.add_argument("--data", help="(evaluar) data.yaml original con las 14 clases")
     ap.add_argument("--root", default=None)
@@ -362,7 +381,9 @@ def main():
 
     pipe = DosEtapas(args.det, args.cls, args.imgsz_det, args.imgsz_cls, args.conf, iou_nms=args.iou,
                      margen=args.margen, device=args.device, ventana=args.ventana,
+                     normalizar=args.normalizar_fondo,
                      tamano=parsear_tamano(args.tamano) if args.tamano else None)
+    comprobar_preproceso(args)
     if args.modo == "evaluar":
         if not args.data:
             ap.error("evaluar requiere --data")
