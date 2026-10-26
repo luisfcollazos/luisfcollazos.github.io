@@ -127,6 +127,7 @@ def main():
     ap.add_argument("--imgsz-det", type=int, default=1280)
     ap.add_argument("--ventana", type=int, default=160, help="la misma que en 2_recortar_granos.py")
     ap.add_argument("--normalizar-fondo", action="store_true", help="si se usó en 2_recortar_granos.py")
+    ap.add_argument("--umbrales", default=None, help="umbrales.json de 4_dos_etapas.py --umbrales auto")
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--tamano", default=None, metavar="CLASE:METRICA:UMBRAL:GRANDE:PEQUENO")
     ap.add_argument("--renombrar", action="append", default=[], metavar="MODELO=LABEL_STUDIO",
@@ -154,6 +155,8 @@ def main():
             ap.error("--ajuste-prior necesita --data y --cls-data")
         pipe.fijar_prior(dos_etapas.contar_clases(cargar_data_yaml(args.data), "train"),
                          dos_etapas.contar_recortes(args.cls_data))
+    if args.umbrales:
+        pipe.umbrales = dos_etapas.leer_umbrales(args.umbrales, args.ajuste_prior)
     renombrar = dict(r.split("=", 1) for r in args.renombrar)
     salida = {c: renombrar.get(c, c) for c in pipe.clases_salida}
     faltan = sorted(n for n in salida.values() if n not in cfg["etiquetas"])

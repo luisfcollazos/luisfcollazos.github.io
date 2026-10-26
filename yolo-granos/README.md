@@ -66,6 +66,21 @@ python marcar_errores.py --errores revision_clases/Oreado.csv --data YoloDataset
 El segundo comando dibuja esos granos sobre las imágenes completas con su número del mosaico ("#12"),
 para encontrarlos en Label Studio.
 
+## Imperfecciones tolerables: umbrales por clase
+
+Un grano "sano" puede tener imperfecciones leves. Con umbrales por clase, un grano solo se asigna a un
+defecto si el clasificador está suficientemente seguro; si no, queda como sano. Se buscan en val con el
+TAU ya elegido y se aplican en test una sola vez:
+
+```bash
+python 4_dos_etapas.py evaluar ... --split val  --ajuste-prior 0.5 --umbrales auto --out res_val
+python 4_dos_etapas.py evaluar ... --split test --ajuste-prior 0.5 --umbrales res_val/umbrales.json
+```
+
+Por defecto cada umbral maximiza el F1 de su clase; con `--precision-min 0.8` se elige el menor umbral
+que deja cada defecto con al menos 80 % de precisión (menos falsas alarmas, más defectos sin detectar).
+El mismo `umbrales.json` sirve en `predecir` y en `preetiquetar_ls.py`.
+
 ## Etiquetar imágenes nuevas con ayuda del modelo
 
 1. Sube las imágenes nuevas al **mismo proyecto** de Label Studio (Import).

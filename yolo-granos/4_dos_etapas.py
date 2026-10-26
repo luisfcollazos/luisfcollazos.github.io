@@ -18,8 +18,16 @@ granos a la clase dominante (sanog). Con TAU > 0 se multiplican sus probabilidad
 (frecuencia real / frecuencia en el entrenamiento)^TAU: TAU=0 no corrige, TAU=1 corrige del todo.
 Se pueden probar varios valores en una pasada (--ajuste-prior 0,0.5,1). Elige TAU en val, no en test.
 
+Umbrales por clase (--umbrales): un grano solo se asigna a un defecto si el clasificador está
+suficientemente seguro; si no, queda como `sano` (--clase-tolerante). Así las imperfecciones leves, que se
+toleran en un grano sano, no se cuentan como defecto. Con `--umbrales auto` se busca en el split evaluado
+(val) el umbral de cada defecto que maximiza su F1 (o, con --precision-min, el menor que alcanza esa
+precisión) y se guardan en <out>/umbrales.json; después se aplican en test con --umbrales <out>/umbrales.json.
+
 Uso:
   python 4_dos_etapas.py evaluar  --det det.pt --cls cls.pt --data data.yaml --split val
+  python 4_dos_etapas.py evaluar  ... --split val  --ajuste-prior 0.5 --umbrales auto --out res_val
+  python 4_dos_etapas.py evaluar  ... --split test --ajuste-prior 0.5 --umbrales res_val/umbrales.json
   python 4_dos_etapas.py evaluar  --det det.pt --cls cls.pt --data data.yaml --split val \
       --cls-data dataset_cls --ajuste-prior 0,0.25,0.5,0.75,1
   python 4_dos_etapas.py evaluar  --det det.pt --cls cls.pt --data data.yaml --tamano "sano:ancho:23.5:sanog:sanop"
@@ -72,6 +80,9 @@ class DosEtapas:
             if tamano["clase"] not in self.clases_salida:
                 raise SystemExit(f"--tamano: el clasificador no tiene la clase '{tamano['clase']}'")
             self.clases_salida = (self.clases_salida - {tamano["clase"]}) | {tamano["grande"], tamano["pequeno"]}
+        self.indice = {n: i for i, n in self.names.items()}
+        self.umbrales = {}  # {defecto: probabilidad mínima}; por debajo el grano queda como self.tolerante
+        self.tolerante = "sano"
         self.sin_medida = 0  # granos en los que no se pudo aislar el grano y se usó la caja
         self.log_ratio = np.zeros(len(self.names))
 
@@ -88,6 +99,10 @@ class DosEtapas:
         p = p / p.sum()
         top = int(p.argmax())
         nombre = self.names[top]
+        u = self.umbrales.get(nombre)
+        if u and p[top] < u and self.tolerante in self.indice:  # imperfección leve: se tolera
+            top = self.indice[self.tolerante]
+            nombre = self.tolerante
         if self.tamano and nombre == self.tamano["clase"]:
             t = self.tamano
             nombre = t["grande"] if medida >= t["umbral"] else t["pequeno"]
@@ -172,34 +187,51 @@ def evaluar(pipe, args):
         if n_img % 50 == 0:
             print(f"  {n_img}/{len(imagenes)} imágenes")
 
-    resumen, errores = [], []
-    for tau in taus:
+    # emparejamiento voraz por IoU descendente (como Ultralytics: solo la caja, no la clase): no depende
+    # de TAU ni de los umbrales, así que se calcula una vez
+    for k, (img_path, tam, crudos, gts) in enumerate(cache):
+        cache[k] = (img_path, tam, crudos, gts, emparejar([c[0] for c in crudos], [g[1] for g in gts]))
+
+    if args.umbrales == "auto" and len(taus) > 1:
+        raise SystemExit("--umbrales auto se busca para un solo TAU: elige primero TAU en val (--ajuste-prior 0.5)")
+    if args.umbrales and args.umbrales != "auto":
+        pipe.umbrales = leer_umbrales(args.umbrales, taus[0])
+        print("Umbrales por clase: " + ", ".join(f"{k}={v:g}" for k, v in sorted(pipe.umbrales.items())))
+
+    def matriz(tau, errores=None):
         m = np.zeros((nc + 1, nc + 1), dtype=int)
-        for img_path, tam, crudos, gts in cache:
+        for img_path, tam, crudos, gts, pares in cache:
             preds = [(caja, *pipe.nombrar(probs, medida, tau)) for caja, probs, medida, _ in crudos]
-            # emparejamiento voraz por IoU descendente (como Ultralytics: solo la caja, no la clase)
-            pares = sorted(((iou(p[0], g[1]), pi, gi) for pi, p in enumerate(preds) for gi, g in enumerate(gts)),
-                           reverse=True)
-            usados_p, usados_g = set(), set()
-            for v, pi, gi in pares:
-                if v < 0.5:
-                    break
-                if pi in usados_p or gi in usados_g:
-                    continue
-                usados_p.add(pi)
-                usados_g.add(gi)
+            for pi, gi in pares.items():
                 m[idx[preds[pi][1]], gts[gi][0]] += 1
-                if args.guardar_errores and tau == taus[0] and preds[pi][1] != names[gts[gi][0]]:
+                if errores is not None and preds[pi][1] != names[gts[gi][0]]:
                     errores.append((img_path, tam, gts[gi][1], names[gts[gi][0]], preds[pi][1], preds[pi][2]))
             for pi, p in enumerate(preds):
-                if pi not in usados_p:
+                if pi not in pares:
                     m[idx[p[1]], nc] += 1  # falso positivo
-            for gi, g in enumerate(gts):
-                if gi not in usados_g:
-                    m[nc, g[0]] += 1  # no detectado
+            for gi in set(range(len(gts))) - set(pares.values()):
+                m[nc, gts[gi][0]] += 1  # no detectado
+        return m
+
+    resumen, errores = [], []
+    for tau in taus:
+        m = matriz(tau, errores if args.guardar_errores and tau == taus[0] and args.umbrales != "auto" else None)
         sufijo = f"_tau{tau:g}" if len(taus) > 1 else ""
         print(f"\n========== ajuste-prior TAU = {tau:g} ==========" if len(taus) > 1 else "")
         resumen.append((tau, *informe(m, names, Path(args.out), sufijo)))
+
+    if args.umbrales == "auto":
+        tau = taus[0]
+        pipe.umbrales = buscar_umbrales(pipe, cache, names, tau, args.precision_min)
+        m = matriz(tau, errores if args.guardar_errores else None)
+        print("\n========== con umbrales por clase ==========")
+        global_, macro = informe(m, names, Path(args.out), "_umbrales")
+        print(f"\nAntes: aciertos {resumen[0][1]:.1%}, recall medio {resumen[0][2]:.1%}"
+              f"   ->   con umbrales: aciertos {global_:.1%}, recall medio {macro:.1%}")
+        destino = Path(args.out) / "umbrales.json"
+        destino.write_text(json.dumps({"tau": tau, "tolerante": pipe.tolerante, "umbrales": pipe.umbrales},
+                                      indent=1, ensure_ascii=False), encoding="utf-8")
+        print(f"Umbrales guardados en {destino}: aplícalos en test con --umbrales {destino} --ajuste-prior {tau:g}")
 
     if len(taus) > 1:
         print("\n===== Resumen por TAU =====")
@@ -211,6 +243,77 @@ def evaluar(pipe, args):
         guardar_errores(errores, Path(args.guardar_errores), args.errores_max, taus[0])
     if pipe.tamano:
         print(f"\nGranos medidos con la caja por no poder aislarlos (pegados/fondo irregular): {pipe.sin_medida}")
+
+
+def emparejar(cajas_pred, cajas_gt, umbral=0.5):
+    """{índice de predicción: índice de etiqueta} por IoU descendente, cada una usada una sola vez."""
+    pares = sorted(((iou(p, g), pi, gi) for pi, p in enumerate(cajas_pred) for gi, g in enumerate(cajas_gt)),
+                   reverse=True)
+    res, usados_g = {}, set()
+    for v, pi, gi in pares:
+        if v < umbral:
+            break
+        if pi not in res and gi not in usados_g:
+            res[pi] = gi
+            usados_g.add(gi)
+    return res
+
+
+def buscar_umbrales(pipe, cache, names, tau, precision_min=None):
+    """Umbral de probabilidad por defecto: el que maximiza su F1 en este split (o el menor que alcanza
+    `precision_min`). Los granos de ese defecto por debajo del umbral pasan a `pipe.tolerante`."""
+    from collections import defaultdict
+
+    pipe.umbrales = {}
+    reales = defaultdict(int)
+    por_clase = defaultdict(list)  # clase predicha -> [(probabilidad, ¿acierto?)]
+    for _, _, crudos, gts, pares in cache:
+        for c, *_ in gts:
+            reales[names[c]] += 1
+        for pi, (_, probs, medida, _) in enumerate(crudos):
+            nombre, conf = pipe.nombrar(probs, medida, tau)
+            gi = pares.get(pi)
+            por_clase[nombre].append((conf, gi is not None and names[gts[gi][0]] == nombre))
+
+    umbrales = {}
+    print(f"\n===== Umbrales por clase (TAU {tau:g}; objetivo: "
+          f"{f'precisión >= {precision_min:.0%}' if precision_min else 'máximo F1'}) =====")
+    print(f"{'clase':<14}{'umbral':>8}{'precisión':>20}{'recall':>20}{'a ' + pipe.tolerante:>10}")
+    for nombre in sorted(por_clase):
+        if nombre == pipe.tolerante or not reales[nombre]:
+            continue
+        lista = por_clase[nombre]
+
+        def medir(t):
+            tp = sum(1 for p, ok in lista if p >= t and ok)
+            n = sum(1 for p, _ in lista if p >= t)
+            prec = tp / n if n else 0.0
+            rec = tp / reales[nombre]
+            return prec, rec, (2 * prec * rec / (prec + rec) if prec + rec else 0.0), len(lista) - n
+
+        candidatos = [0.0] + [round(x, 2) for x in np.arange(0.30, 0.96, 0.05)]
+        evaluados = [(t, *medir(t)) for t in candidatos]
+        if precision_min:
+            ok = [e for e in evaluados if e[1] >= precision_min]
+            elegido = ok[0] if ok else max(evaluados, key=lambda e: e[3])
+        else:
+            elegido = max(evaluados, key=lambda e: (e[3], -e[0]))
+        base = evaluados[0]
+        if elegido[0] > 0:
+            umbrales[nombre] = elegido[0]
+        print(f"{nombre:<14}{elegido[0]:>8.2f}{base[1]:>10.1%} -> {elegido[1]:<6.1%}"
+              f"{base[2]:>10.1%} -> {elegido[2]:<6.1%}{elegido[4]:>8}")
+    return umbrales
+
+
+def leer_umbrales(spec, tau):
+    """Archivo umbrales.json de --umbrales auto, o lista 'vinagre:0.6,malla:0.5'."""
+    if spec.endswith(".json"):
+        d = json.loads(Path(spec).read_text(encoding="utf-8"))
+        if abs(d.get("tau", tau) - tau) > 1e-9:
+            print(f"!! Los umbrales se buscaron con TAU {d['tau']:g} y ahora usas {tau:g}: usa el mismo TAU.")
+        return {k: float(v) for k, v in d["umbrales"].items()}
+    return {k: float(v) for k, v in (x.split(":") for x in spec.split(",") if x)}
 
 
 def guardar_errores(errores, out, maximo, tau):
@@ -371,6 +474,12 @@ def main():
     ap.add_argument("--ajuste-prior", default="0", metavar="TAU[,TAU...]",
                     help="corrige el balanceo del clasificador hacia la frecuencia real de las clases (0 = no)")
     ap.add_argument("--cls-data", default=None, help="carpeta de recortes del clasificador (para --ajuste-prior)")
+    ap.add_argument("--umbrales", default=None, metavar="auto|umbrales.json|CLASE:P,...",
+                    help="probabilidad mínima por defecto; por debajo el grano queda como --clase-tolerante. "
+                         "'auto' (evaluar, en val) los busca y guarda en <out>/umbrales.json")
+    ap.add_argument("--precision-min", type=float, default=None,
+                    help="con --umbrales auto: menor umbral que alcanza esta precisión (si no, máximo F1)")
+    ap.add_argument("--clase-tolerante", default="sano", help="clase a la que pasan los granos bajo el umbral")
     ap.add_argument("--guardar-errores", default=None, metavar="CARPETA",
                     help="(evaluar) guarda recortes de los granos mal clasificados, por confusión (usa el primer TAU)")
     ap.add_argument("--errores-max", type=int, default=80, help="máximo de recortes por confusión")
@@ -384,6 +493,9 @@ def main():
                      normalizar=args.normalizar_fondo,
                      tamano=parsear_tamano(args.tamano) if args.tamano else None)
     comprobar_preproceso(args)
+    pipe.tolerante = args.clase_tolerante
+    if args.umbrales and pipe.tolerante not in pipe.indice:
+        raise SystemExit(f"--clase-tolerante '{pipe.tolerante}' no es una clase del clasificador")
     if args.modo == "evaluar":
         if not args.data:
             ap.error("evaluar requiere --data")
@@ -396,6 +508,10 @@ def main():
                 ap.error("--ajuste-prior en predecir necesita --data (frecuencia real) y --cls-data")
             pipe.fijar_prior(contar_clases(cargar_data_yaml(args.data, args.root), "train"),
                              contar_recortes(args.cls_data))
+        if args.umbrales:
+            if args.umbrales == "auto":
+                ap.error("--umbrales auto solo en evaluar (en val); en predecir usa el umbrales.json resultante")
+            pipe.umbrales = leer_umbrales(args.umbrales, float(str(args.ajuste_prior).split(",")[0]))
         predecir(pipe, args)
 
 
