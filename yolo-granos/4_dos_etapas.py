@@ -40,7 +40,7 @@ import json
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 
 from comun import (IMG_EXTS, cargar_data_yaml, iou, leer_etiquetas, listar_imagenes, medir_grano,
@@ -415,6 +415,66 @@ def informe(m, names, out, sufijo=""):
     return global_, macro
 
 
+# colores bien distinguibles; el primero (gris claro) es para la clase tolerante (sano)
+PALETA = [(200, 200, 200), (230, 25, 75), (60, 180, 75), (255, 225, 25), (0, 130, 200), (245, 130, 48),
+          (145, 30, 180), (70, 240, 240), (240, 50, 230), (210, 245, 60), (250, 190, 212), (0, 128, 128),
+          (170, 110, 40), (128, 0, 0), (170, 255, 195), (128, 128, 0), (0, 0, 128)]
+
+
+def fuente(tam):
+    try:
+        return ImageFont.load_default(size=tam)
+    except TypeError:  # Pillow antiguo
+        return ImageFont.load_default()
+
+
+def dibujar(im, preds, clases, tolerante, mostrar_confianza=False):
+    """Foto con un color por clase, nombre sobre cada defecto y una leyenda con los conteos abajo.
+    Los granos de la clase tolerante (sano) van con un recuadro fino gris, sin texto, para no tapar."""
+    from collections import Counter
+
+    color = {c: PALETA[k % len(PALETA)] for k, c in enumerate(clases)}
+    W, H = im.size
+    tam = max(14, W // 90)
+    f = fuente(tam)
+    d = ImageDraw.Draw(im)
+    for caja, nombre, cc, _ in sorted(preds, key=lambda p: p[1] != tolerante):  # defectos encima
+        if nombre == tolerante:
+            d.rectangle(caja, outline=color[nombre], width=1)
+            continue
+        d.rectangle(caja, outline=color[nombre], width=max(2, W // 500))
+        texto = f"{nombre} {cc:.0%}" if mostrar_confianza else nombre
+        x, y = caja[0], max(0, caja[1] - tam - 4)
+        b = d.textbbox((x, y), texto, font=f)
+        if b[2] > W:
+            x -= b[2] - W
+            b = d.textbbox((x, y), texto, font=f)
+        d.rectangle((b[0] - 2, b[1] - 2, b[2] + 2, b[3] + 2), fill=color[nombre])
+        claro = sum(color[nombre]) > 450
+        d.text((x, y), texto, font=f, fill=(0, 0, 0) if claro else (255, 255, 255))
+
+    # leyenda
+    cuenta = Counter(n for _, n, _, _ in preds)
+    total = sum(cuenta.values())
+    items = [c for c in clases if cuenta[c]]
+    fl = fuente(int(tam * 1.1))
+    alto_fila = int(tam * 1.8)
+    por_fila = max(1, W // (tam * 14))
+    filas = (len(items) + por_fila - 1) // por_fila + 1
+    lienzo = Image.new("RGB", (W, H + filas * alto_fila + tam), (255, 255, 255))
+    lienzo.paste(im, (0, 0))
+    dl = ImageDraw.Draw(lienzo)
+    defectos = total - cuenta[tolerante]
+    dl.text((tam, H + tam // 2), f"{total} granos  |  defectos: {defectos} ({defectos / total:.1%})" if total
+            else "sin granos", font=fl, fill=(0, 0, 0))
+    for k, c in enumerate(items):
+        x = tam + (k % por_fila) * (W // por_fila)
+        y = H + tam // 2 + (k // por_fila + 1) * alto_fila
+        dl.rectangle((x, y, x + tam, y + tam), fill=color[c], outline=(0, 0, 0))
+        dl.text((x + tam * 1.5, y - 2), f"{c}: {cuenta[c]}", font=fl, fill=(0, 0, 0))
+    return lienzo
+
+
 def predecir(pipe, args):
     src = Path(args.source)
     imagenes = sorted(f for f in src.rglob("*") if f.suffix.lower() in IMG_EXTS) if src.is_dir() else [src]
@@ -433,11 +493,8 @@ def predecir(pipe, args):
             for caja, nombre, cc, cd in preds:
                 w.writerow([img_path.name, *(round(v, 1) for v in caja), nombre, round(cc, 4), round(cd, 4)])
             if args.guardar_imagenes:
-                d = ImageDraw.Draw(im)
-                for caja, nombre, cc, _ in preds:
-                    d.rectangle(caja, outline=(255, 0, 0), width=2)
-                    d.text((caja[0] + 2, caja[1] + 2), f"{nombre} {cc:.2f}", fill=(255, 255, 0))
-                im.save(out / img_path.name)
+                dibujar(im, preds, clases, pipe.tolerante, args.mostrar_confianza).save(
+                    out / f"{img_path.stem}.jpg", quality=92)
             print(f"{img_path.name}: {len(preds)} granos")
 
     # resumen por foto (formato para Excel en español: ';' y coma decimal)
@@ -512,7 +569,9 @@ def main():
                     help="(evaluar) guarda recortes de los granos mal clasificados, por confusión (usa el primer TAU)")
     ap.add_argument("--errores-max", type=int, default=80, help="máximo de recortes por confusión")
     ap.add_argument("--source", help="(predecir) imagen o carpeta")
-    ap.add_argument("--guardar-imagenes", action="store_true")
+    ap.add_argument("--guardar-imagenes", action="store_true",
+                    help="(predecir) guarda cada foto con un color por clase y una leyenda con los conteos")
+    ap.add_argument("--mostrar-confianza", action="store_true", help="añade la confianza al nombre de cada defecto")
     ap.add_argument("--out", default="resultados_dos_etapas")
     args = ap.parse_args()
 
