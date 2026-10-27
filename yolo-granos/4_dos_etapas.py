@@ -420,11 +420,16 @@ def predecir(pipe, args):
     imagenes = sorted(f for f in src.rglob("*") if f.suffix.lower() in IMG_EXTS) if src.is_dir() else [src]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    from collections import Counter
+
+    clases = [pipe.tolerante] + sorted(pipe.clases_salida - {pipe.tolerante}, key=str.lower)
+    resumen = []
     with open(out / "predicciones.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["imagen", "x1", "y1", "x2", "y2", "clase", "conf_clase", "conf_det"])
         for img_path in imagenes:
             im, preds = pipe(img_path, tau=float(str(args.ajuste_prior).split(",")[0]))
+            resumen.append((img_path.name, Counter(nombre for _, nombre, _, _ in preds)))
             for caja, nombre, cc, cd in preds:
                 w.writerow([img_path.name, *(round(v, 1) for v in caja), nombre, round(cc, 4), round(cd, 4)])
             if args.guardar_imagenes:
@@ -434,7 +439,30 @@ def predecir(pipe, args):
                     d.text((caja[0] + 2, caja[1] + 2), f"{nombre} {cc:.2f}", fill=(255, 255, 0))
                 im.save(out / img_path.name)
             print(f"{img_path.name}: {len(preds)} granos")
-    print(f"\nResultados en {out}/predicciones.csv")
+
+    # resumen por foto (formato para Excel en español: ';' y coma decimal)
+    def fila(nombre, cuenta):
+        total = sum(cuenta.values())
+        defectos = total - cuenta[pipe.tolerante]
+        pct = f"{100 * defectos / total:.1f}".replace(".", ",") if total else ""
+        return [nombre, total] + [cuenta[c] for c in clases] + [defectos, pct]
+
+    total = sum((c for _, c in resumen), Counter())
+    with open(out / "resumen_por_imagen.csv", "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow(["imagen", "granos"] + clases + ["defectos", "% defectos"])
+        for nombre, cuenta in resumen:
+            w.writerow(fila(nombre, cuenta))
+        w.writerow(fila("TOTAL", total))
+
+    n = sum(total.values())
+    print(f"\nTotal: {len(resumen)} imágenes, {n} granos")
+    for c in clases:
+        if total[c]:
+            print(f"  {c:<14}{total[c]:>7}  {total[c] / n:6.1%}")
+    if n:
+        print(f"  {'defectos':<14}{n - total[pipe.tolerante]:>7}  {(n - total[pipe.tolerante]) / n:6.1%}")
+    print(f"\nResultados en {out}/predicciones.csv y {out}/resumen_por_imagen.csv")
 
 
 def comprobar_preproceso(args):
