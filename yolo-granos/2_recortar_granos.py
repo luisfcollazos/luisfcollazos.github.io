@@ -79,6 +79,7 @@ def main():
     if out.exists():
         shutil.rmtree(out)
 
+    lados = []  # lado mayor de cada caja de train: tamaño de referencia de un grano (para --escala auto)
     for split in ("train", "val", "test"):
         if not data.get(split):
             continue
@@ -101,6 +102,8 @@ def main():
                     x1, y1, x2, y2 = xywhn_a_xyxy(xc, yc, w, h, W, H)
                     if min(x2 - x1, y2 - y1) < args.min_px:
                         continue
+                    if split == "train":
+                        lados.append(max(x2 - x1, y2 - y1))
                     nombre = destino_de[names[cls]]
                     destino = out / split / nombre / f"{img_path.stem}_{i:03d}.jpg"
                     destino.parent.mkdir(parents=True, exist_ok=True)
@@ -133,7 +136,8 @@ def main():
             print(f"  {n:<14} {conteo[n]:>6}" + (f"  -> {final} en disco" if final != conteo[n] else ""))
 
     with open(out / "preproceso.json", "w", encoding="utf-8") as f:
-        json.dump({"ventana": args.ventana, "margen": args.margen, "normalizar_fondo": args.normalizar_fondo}, f)
+        json.dump({"ventana": args.ventana, "margen": args.margen, "normalizar_fondo": args.normalizar_fondo,
+                   "lado_mediano_px": round(sorted(lados)[len(lados) // 2], 1) if lados else None}, f)
 
     if args.yaml_detector:
         det = {"names": {0: "grano"}}

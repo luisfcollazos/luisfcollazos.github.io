@@ -67,12 +67,14 @@ def medida_caja(caja, metrica):
 
 class DosEtapas:
     def __init__(self, det, cls, imgsz_det=1024, imgsz_cls=224, conf=0.25, iou_nms=0.5, margen=0.15, device=None,
-                 tamano=None, ventana=0, normalizar=False):
+                 tamano=None, ventana=0, normalizar=False, escala_ref=None):
         self.det, self.cls = YOLO(det), YOLO(cls)
         self.imgsz_det, self.imgsz_cls = imgsz_det, imgsz_cls
         self.conf, self.iou_nms, self.margen, self.device = conf, iou_nms, margen, device
         self.ventana = ventana
         self.normalizar = normalizar
+        self.escala_ref = escala_ref  # lado mediano de un grano (px) en las fotos de entrenamiento
+        self.ultima_escala = 1.0
         self.names = self.cls.names  # {i: nombre}
         self.tamano = tamano
         self.clases_salida = set(self.names.values())
@@ -118,13 +120,15 @@ class DosEtapas:
     def crudo(self, img_path):
         """Detecta y clasifica: devuelve (imagen, [(xyxy, probs, medida, conf_det)])."""
         im = (img_path if isinstance(img_path, Image.Image) else Image.open(img_path)).convert("RGB")
-        r = self.det.predict(im, imgsz=self.imgsz_det, conf=self.conf, iou=self.iou_nms,
+        f = self.ultima_escala = self.factor_escala(im) if self.escala_ref else 1.0
+        im_esc = im.resize((round(im.width * f), round(im.height * f)), Image.LANCZOS) if f != 1.0 else im
+        r = self.det.predict(im_esc, imgsz=self.imgsz_det, conf=self.conf, iou=self.iou_nms,
                              agnostic_nms=True, device=self.device, verbose=False)[0]
         cajas = r.boxes.xyxy.cpu().numpy() if len(r.boxes) else np.zeros((0, 4))
         conf_det = r.boxes.conf.cpu().numpy() if len(r.boxes) else np.zeros(0)
         if not len(cajas):
             return im, []
-        im_cls = normalizar_fondo(im) if self.normalizar else im  # el detector usa la foto original
+        im_cls = normalizar_fondo(im_esc) if self.normalizar else im_esc  # el detector usa la foto sin normalizar
         recortes = [recortar(im_cls, c, self.margen, ventana=self.ventana) for c in cajas]
         salida = []
         # en lotes para no saturar memoria con imágenes de muchos granos
@@ -133,9 +137,24 @@ class DosEtapas:
             for j, rc in enumerate(res):
                 k = i + j
                 medida = self._medida(recortes[k], cajas[k]) if self.tamano else None
-                salida.append((cajas[k].tolist(), rc.probs.data.cpu().numpy().astype(float), medida,
+                salida.append(((cajas[k] / f).tolist(), rc.probs.data.cpu().numpy().astype(float), medida,
                                float(conf_det[k])))
         return im, salida
+
+    def factor_escala(self, im):
+        """Factor para que el grano mediano de la foto mida lo mismo (px) que en el entrenamiento.
+
+        Fotos de celular: otra resolución y otra distancia -> otro tamaño de grano en píxeles, y el modelo
+        usa el tamaño (Oreado, malla). Se detecta una vez, se mide el lado mayor mediano de los granos y se
+        reescala la foto. Se usa la mediana: la mayoría son sanos, así que no depende de los defectos."""
+        r = self.det.predict(im, imgsz=self.imgsz_det, conf=self.conf, iou=self.iou_nms,
+                             agnostic_nms=True, device=self.device, verbose=False)[0]
+        if len(r.boxes) < 5:
+            return 1.0
+        b = r.boxes.xyxy.cpu().numpy()
+        lado = float(np.median(np.maximum(b[:, 2] - b[:, 0], b[:, 3] - b[:, 1])))
+        f = float(np.clip(self.escala_ref / lado, 1 / 3, 3))
+        return 1.0 if abs(f - 1) < 0.03 else f
 
     def __call__(self, img_path, tau=0.0):
         """Devuelve (imagen, [(xyxy, nombre_clase, conf_clase, conf_det)])."""
@@ -495,7 +514,8 @@ def predecir(pipe, args):
             if args.guardar_imagenes:
                 dibujar(im, preds, clases, pipe.tolerante, args.mostrar_confianza).save(
                     out / f"{img_path.stem}.jpg", quality=92)
-            print(f"{img_path.name}: {len(preds)} granos")
+            print(f"{img_path.name}: {len(preds)} granos"
+                  + (f"  (escala x{pipe.ultima_escala:.2f})" if pipe.escala_ref else ""))
 
     # resumen por foto (formato para Excel en español: ';' y coma decimal)
     def fila(nombre, cuenta):
@@ -520,6 +540,20 @@ def predecir(pipe, args):
     if n:
         print(f"  {'defectos':<14}{n - total[pipe.tolerante]:>7}  {(n - total[pipe.tolerante]) / n:6.1%}")
     print(f"\nResultados en {out}/predicciones.csv y {out}/resumen_por_imagen.csv")
+
+
+def leer_escala(args):
+    if args.escala in ("0", "", None):
+        return None
+    if args.escala != "auto":
+        return float(args.escala)
+    f = Path(args.cls_data or "") / "preproceso.json"
+    ref = json.loads(f.read_text(encoding="utf-8")).get("lado_mediano_px") if f.is_file() else None
+    if not ref:
+        raise SystemExit("--escala auto necesita --cls-data con un preproceso.json reciente (vuelve a generar los "
+                         "recortes con 2_recortar_granos.py) o pasa el tamaño a mano: --escala 66")
+    print(f"Escala: los granos se llevan a un lado mediano de {ref:g} px, como en el entrenamiento")
+    return float(ref)
 
 
 def comprobar_preproceso(args):
@@ -552,6 +586,9 @@ def main():
     ap.add_argument("--ventana", type=int, default=0, help="debe coincidir con el usado en 2_recortar_granos.py")
     ap.add_argument("--normalizar-fondo", action="store_true",
                     help="debe coincidir con el usado en 2_recortar_granos.py")
+    ap.add_argument("--escala", default="0", metavar="auto|PX|0",
+                    help="reescala cada foto para que sus granos midan como en el entrenamiento (fotos de celular). "
+                         "'auto' toma el tamaño de referencia de preproceso.json de --cls-data")
     ap.add_argument("--device", default=None)
     ap.add_argument("--data", help="(evaluar) data.yaml original con las 14 clases")
     ap.add_argument("--root", default=None)
@@ -577,7 +614,7 @@ def main():
 
     pipe = DosEtapas(args.det, args.cls, args.imgsz_det, args.imgsz_cls, args.conf, iou_nms=args.iou,
                      margen=args.margen, device=args.device, ventana=args.ventana,
-                     normalizar=args.normalizar_fondo,
+                     normalizar=args.normalizar_fondo, escala_ref=leer_escala(args),
                      tamano=parsear_tamano(args.tamano) if args.tamano else None)
     comprobar_preproceso(args)
     pipe.tolerante = args.clase_tolerante

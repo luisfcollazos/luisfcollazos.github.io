@@ -81,6 +81,19 @@ Por defecto cada umbral maximiza el F1 de su clase; con `--precision-min 0.8` se
 que deja cada defecto con al menos 80 % de precisión (menos falsas alarmas, más defectos sin detectar).
 El mismo `umbrales.json` sirve en `predecir` y en `preetiquetar_ls.py`.
 
+## Fotos de celular (u otra cámara)
+
+Primero mide en qué se diferencian de las del dataset (tamaño del grano en píxeles, nitidez, fondo, color):
+
+```bash
+python 0e_comparar_fotos.py --det det.pt --data YoloDataset8/data.yaml --fotos fotos_celular
+```
+
+Si el tamaño del grano cambia, `4_dos_etapas.py ... --escala auto` reescala cada foto para que el grano
+mediano mida lo mismo que en el entrenamiento (el tamaño de referencia está en `preproceso.json` de los
+recortes; regenéralos si tu `preproceso.json` no tiene `lado_mediano_px`). La nitidez y el color no se
+pueden recuperar después: se mejoran con la forma de tomar la foto o entrenando con fotos de celular.
+
 ## Etiquetar imágenes nuevas con ayuda del modelo
 
 1. Sube las imágenes nuevas al **mismo proyecto** de Label Studio (Import).
