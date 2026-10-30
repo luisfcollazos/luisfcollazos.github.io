@@ -18,6 +18,11 @@ grano: un grano grande ocupa más del recorte que uno pequeño, así el clasific
 Con --normalizar-fondo cada foto se corrige con su fondo como referencia de blanco antes de recortar
 (ver 0d_iluminacion.py). Úsalo también en 4_dos_etapas.py y preetiquetar_ls.py.
 
+Fotos de distintas cámaras (celular): con --escala auto cada foto se reescala para que su grano mediano
+mida lo mismo que el grano mediano del dataset, igual que hace 4_dos_etapas.py --escala auto al predecir.
+Con --degradar N se guardan además N copias degradadas de cada recorte de train (desenfoque, menos
+resolución, compresión JPEG), para que el clasificador tolere fotos de celular.
+
 En la carpeta de salida se guarda preproceso.json (ventana, margen, normalización): 4_dos_etapas.py lo
 compara con sus opciones y se detiene si no coinciden.
 
@@ -32,6 +37,7 @@ Uso:
 """
 
 import argparse
+import io
 import json
 import random
 import shutil
@@ -42,6 +48,22 @@ import yaml
 from PIL import Image
 
 from comun import cargar_data_yaml, leer_etiquetas, listar_imagenes, normalizar_fondo, recortar, xywhn_a_xyxy
+
+
+def degradar(img, rng):
+    """Simula una foto de celular: menos resolución, desenfoque leve y compresión JPEG. No toca el color
+    (el tono distingue Oscuro/Oreado/vinagre y se corrige aparte con --normalizar-fondo)."""
+    from PIL import ImageFilter
+
+    w, h = img.size
+    f = rng.uniform(0.35, 0.8)
+    out = img.resize((max(8, round(w * f)), max(8, round(h * f))), Image.BILINEAR).resize((w, h), Image.BILINEAR)
+    if rng.random() < 0.6:
+        out = out.filter(ImageFilter.GaussianBlur(rng.uniform(0.3, 1.5)))
+    buf = io.BytesIO()
+    out.save(buf, "JPEG", quality=rng.randint(35, 75))
+    buf.seek(0)
+    return Image.open(buf).convert("RGB")
 
 
 def main():
@@ -60,6 +82,10 @@ def main():
                     help="en train, deja como máximo N recortes por clase (submuestrea la clase dominante)")
     ap.add_argument("--fusionar", action="append", default=[], metavar="NUEVA=A,B",
                     help="une clases en una sola carpeta; se puede repetir")
+    ap.add_argument("--escala", default="0", metavar="auto|PX|0",
+                    help="reescala cada foto para que su grano mediano mida como el del dataset (auto) o PX")
+    ap.add_argument("--degradar", type=int, default=0,
+                    help="en train, N copias degradadas (desenfoque/resolución/JPEG) de cada recorte")
     ap.add_argument("--normalizar-fondo", action="store_true",
                     help="corrige la iluminación de cada foto con el fondo como referencia (ver 0d_iluminacion.py)")
     ap.add_argument("--seed", type=int, default=0)
@@ -80,6 +106,23 @@ def main():
         shutil.rmtree(out)
 
     lados = []  # lado mayor de cada caja de train: tamaño de referencia de un grano (para --escala auto)
+    mediana_img = {}  # lado mayor mediano de los granos de cada imagen
+    for split in ("train", "val", "test"):
+        for img_path in listar_imagenes(data.get(split) or []):
+            et = leer_etiquetas(img_path)
+            if et:
+                with Image.open(img_path) as im:
+                    W, H = im.size
+                ls = sorted(max(w * W, h * H) for _, _, _, w, h in et)
+                mediana_img[img_path] = ls[len(ls) // 2]
+    ref = None
+    if args.escala == "auto":
+        tr = sorted(mediana_img[p] for p in listar_imagenes(data.get("train") or []) if p in mediana_img)
+        ref = tr[len(tr) // 2]
+        print(f"Escala: cada foto se lleva a un grano mediano de {ref:.1f} px")
+    elif args.escala not in ("0", ""):
+        ref = float(args.escala)
+    rng_deg = random.Random(args.seed + 1)
     for split in ("train", "val", "test"):
         if not data.get(split):
             continue
@@ -94,6 +137,10 @@ def main():
                 continue
             with Image.open(img_path) as im:
                 im = normalizar_fondo(im) if args.normalizar_fondo else im.convert("RGB")
+                if ref:
+                    f = ref / mediana_img[img_path]
+                    if abs(f - 1) >= 0.03:
+                        im = im.resize((round(im.width * f), round(im.height * f)), Image.LANCZOS)
                 W, H = im.size
                 for i, (cls, xc, yc, w, h) in enumerate(etiquetas):
                     if cls >= len(names):
@@ -107,9 +154,15 @@ def main():
                     nombre = destino_de[names[cls]]
                     destino = out / split / nombre / f"{img_path.stem}_{i:03d}.jpg"
                     destino.parent.mkdir(parents=True, exist_ok=True)
-                    recortar(im, (x1, y1, x2, y2), args.margen, ventana=args.ventana).save(destino, quality=95)
+                    rec = recortar(im, (x1, y1, x2, y2), args.margen, ventana=args.ventana)
+                    rec.save(destino, quality=95)
                     conteo[nombre] += 1
                     archivos_por_clase[nombre].append(destino)
+                    if split == "train":
+                        for k in range(args.degradar):
+                            copia = destino.with_name(f"{destino.stem}_deg{k}.jpg")
+                            degradar(rec, rng_deg).save(copia, quality=95)
+                            archivos_por_clase[nombre].append(copia)
 
         # Ultralytics classify necesita la carpeta de cada clase en todos los splits
         for n in clases_salida:
@@ -137,7 +190,8 @@ def main():
 
     with open(out / "preproceso.json", "w", encoding="utf-8") as f:
         json.dump({"ventana": args.ventana, "margen": args.margen, "normalizar_fondo": args.normalizar_fondo,
-                   "lado_mediano_px": round(sorted(lados)[len(lados) // 2], 1) if lados else None}, f)
+                   "lado_mediano_px": round(ref or (sorted(lados)[len(lados) // 2] if lados else 0), 1) or None,
+                   "escala": ref is not None, "degradar": args.degradar}, f)
 
     if args.yaml_detector:
         det = {"names": {0: "grano"}}

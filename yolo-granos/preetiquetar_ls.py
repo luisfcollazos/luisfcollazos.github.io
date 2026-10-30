@@ -136,6 +136,8 @@ def main():
                     help="como en 4_dos_etapas.py; necesita --data y --cls-data")
     ap.add_argument("--data", default=None)
     ap.add_argument("--cls-data", default=None)
+    ap.add_argument("--escala", default="0", metavar="auto|PX|0",
+                    help="como en 4_dos_etapas.py: reescala fotos de celular (auto necesita --cls-data)")
     ap.add_argument("--imagenes", default=None,
                     help="carpeta con las imágenes originales (si no, se descargan de Label Studio)")
     ap.add_argument("--reemplazar", action="store_true", help="procesa también tareas que ya tienen predicciones")
@@ -149,6 +151,7 @@ def main():
 
     pipe = dos_etapas.DosEtapas(args.det, args.cls, args.imgsz_det, conf=args.conf, device=args.device,
                                 ventana=args.ventana, normalizar=args.normalizar_fondo,
+                                escala_ref=dos_etapas.leer_escala(args),
                                 tamano=dos_etapas.parsear_tamano(args.tamano) if args.tamano else None)
     if args.ajuste_prior:
         if not (args.data and args.cls_data):

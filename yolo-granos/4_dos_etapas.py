@@ -562,7 +562,8 @@ def comprobar_preproceso(args):
     if not args.cls_data or not f.is_file():
         return
     entreno = json.loads(f.read_text(encoding="utf-8"))
-    ahora = {"ventana": args.ventana, "margen": args.margen, "normalizar_fondo": args.normalizar_fondo}
+    ahora = {"ventana": args.ventana, "margen": args.margen, "normalizar_fondo": args.normalizar_fondo,
+             "escala": args.escala not in ("0", "", None)}
     distintos = {k: (v, ahora[k]) for k, v in entreno.items() if k in ahora and ahora[k] != v}
     if distintos:
         raise SystemExit("Los recortes no se hacen igual que al entrenar el clasificador:\n" + "\n".join(

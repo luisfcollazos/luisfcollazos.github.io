@@ -94,6 +94,11 @@ mediano mida lo mismo que en el entrenamiento (el tamaño de referencia está en
 recortes; regenéralos si tu `preproceso.json` no tiene `lado_mediano_px`). La nitidez y el color no se
 pueden recuperar después: se mejoran con la forma de tomar la foto o entrenando con fotos de celular.
 
+Para entrenar con fotos de celular mezcladas con las de cámara, genera los recortes con
+`--escala auto` (cada foto se lleva al tamaño de grano del dataset, igual que al predecir) y
+`--degradar 2` (copias desenfocadas/comprimidas de cada recorte de train). Al evaluar y predecir usa
+también `--escala auto`; `4_dos_etapas.py` se detiene si no coincide con los recortes.
+
 ## Etiquetar imágenes nuevas con ayuda del modelo
 
 1. Sube las imágenes nuevas al **mismo proyecto** de Label Studio (Import).
